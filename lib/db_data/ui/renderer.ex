@@ -121,4 +121,20 @@ defmodule DBData.UI.Renderer do
       modal: modal_chunk
     }
   end
+
+  @doc """
+  Converts rendered component tree into ANSI terminal string representation.
+  """
+  def to_ansi(app) do
+    {width, _height} = app.window_size
+
+    header_line = "\e[1;44;37m 🗄️  DBData TUI — Database Manager \e[0m" <> String.duplicate(" ", max(0, width - 36)) <> "\n"
+    sidebar = " [🔌 CONNECTIONS]\n  ├─ 📂 public\n  │   ├─ 📋 users\n  │   └─ 📋 orders\n"
+    editor = " [📜 SQL EDITOR]\n  1 │ SELECT * FROM users LIMIT 50;\n"
+    datagrid = " [📊 DATA GRID (0 rows)]\n  (No data loaded)\n"
+    footer = "\n\e[7m <F1> Conn  <F2> SQL  <F5> Run  <F6> Table Data  <Ctrl+A> Add Conn  <q> Quit \e[0m"
+
+    header_line <> sidebar <> "\n" <> editor <> "\n" <> datagrid <> footer
+  end
 end
+

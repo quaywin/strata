@@ -11,8 +11,8 @@ defmodule DBData.UI.Components.FooterTest do
 
       assert rendered.area == %{x: 0, y: 39, width: 120, height: 1}
       assert is_binary(rendered.text)
-      assert rendered.text =~ "F1"
-      assert rendered.text =~ "F5"
+      assert rendered.text =~ "Table/Query View"
+      assert rendered.text =~ "Add Conn"
     end
 
     test "renders modal keybindings when modal active" do

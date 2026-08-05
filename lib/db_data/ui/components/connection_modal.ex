@@ -66,7 +66,7 @@ defmodule DBData.UI.Components.ConnectionModal do
       if profile do
         %__MODULE__{
           id: profile.id,
-          name: profile.name || "New Connection",
+          name: profile.name || "",
           driver: profile.driver || :postgres,
           host: profile.host || "localhost",
           port: profile.port || default_port(profile.driver),
@@ -77,7 +77,16 @@ defmodule DBData.UI.Components.ConnectionModal do
           ssh_profile_id: profile.ssh_profile_id
         }
       else
-        %__MODULE__{}
+        %__MODULE__{
+          name: "",
+          driver: :postgres,
+          host: "localhost",
+          port: 5432,
+          database: "postgres",
+          username: "postgres",
+          password: "",
+          ssl: false
+        }
       end
 
     opts_without_profile = Keyword.delete(opts, :profile)
@@ -88,9 +97,16 @@ defmodule DBData.UI.Components.ConnectionModal do
   Converts modal form state to a DBData.ConnectionProfile struct.
   """
   def to_profile(%__MODULE__{} = modal) do
+    name =
+      cond do
+        modal.name && String.trim(modal.name) != "" -> String.trim(modal.name)
+        modal.database && String.trim(modal.database) != "" -> "#{String.upcase(to_string(modal.driver))} - #{modal.database}"
+        true -> "#{String.upcase(to_string(modal.driver))} (#{modal.host})"
+      end
+
     %ConnectionProfile{
       id: modal.id || "conn_" <> Integer.to_string(System.unique_integer([:positive])),
-      name: modal.name,
+      name: name,
       driver: modal.driver,
       host: modal.host,
       port: modal.port,
@@ -141,6 +157,30 @@ defmodule DBData.UI.Components.ConnectionModal do
   # SSL mode toggle
   def handle_key(%__MODULE__{focused_field: :ssl} = modal, key) when key in [:space, :enter, :right, :left] do
     %{modal | ssl: not modal.ssl}
+  end
+
+  # Global save shortcut inside modal
+  def handle_key(%__MODULE__{} = modal, key) when key in [{:ctrl, "s"}, {:ctrl, "S"}] do
+    {:save, modal}
+  end
+
+  # Pressing enter in text input fields directly submits/saves the modal form
+  def handle_key(%__MODULE__{focused_field: field} = modal, :enter)
+      when field in [:name, :host, :port, :database, :username, :password, :ssh_profile_id] do
+    {:save, modal}
+  end
+
+  # Buttons handling
+  def handle_key(%__MODULE__{focused_field: :test_button} = modal, key) when key in [:enter, :space] do
+    test_connection(modal)
+  end
+
+  def handle_key(%__MODULE__{focused_field: :save_button} = modal, key) when key in [:enter, :space] do
+    {:save, modal}
+  end
+
+  def handle_key(%__MODULE__{focused_field: :cancel_button} = modal, key) when key in [:enter, :space] do
+    {:cancel, modal}
   end
 
   # Backspace handling
@@ -209,7 +249,7 @@ defmodule DBData.UI.Components.ConnectionModal do
   """
   def render(%__MODULE__{} = modal, area) do
     fields = [
-      %{label: "Name", key: :name, value: modal.name, type: :text},
+      %{label: "Name", key: :name, value: if(modal.name == "", do: "(Type Name...)", else: modal.name), type: :text},
       %{
         label: "Driver",
         key: :driver,
@@ -245,7 +285,7 @@ defmodule DBData.UI.Components.ConnectionModal do
     Enum.at(@fields, rem(idx + delta + cnt, cnt))
   end
 
-  defp default_port(:postgres), do: 5432
-  defp default_port(:mysql), do: 3306
-  defp default_port(_), do: 0
+  defp default_port(driver) do
+    DBData.Adapter.default_port(driver)
+  end
 end

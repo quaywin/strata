@@ -87,7 +87,10 @@ defmodule DBData.UI.Components.DataGridTest do
 
     test "handle_key handles arrow navigation and pagination", %{grid: grid} do
       app = App.new(focus: :datagrid)
-      
+
+      {app_sidebar, _updated_grid} = DataGrid.handle_key(app, grid, :left)
+      assert app_sidebar.focus == :sidebar
+
       {_app, updated_grid} = DataGrid.handle_key(app, grid, :down)
       assert updated_grid.selected_cell == {1, 0}
 

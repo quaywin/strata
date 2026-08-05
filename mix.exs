@@ -8,13 +8,14 @@ defmodule DBData.MixProject do
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      releases: releases()
+      releases: releases(),
+      listeners: [Phoenix.CodeReloader]
     ]
   end
 
   def application do
     [
-      extra_applications: [:logger, :ssh],
+      extra_applications: [:logger, :ssh, :postgrex, :myxql, :exqlite],
       mod: {DBData.Application, []}
     ]
   end
@@ -40,7 +41,13 @@ defmodule DBData.MixProject do
       {:myxql, ">= 0.0.0"},
       {:exqlite, "~> 0.13"},
       {:jason, "~> 1.4"},
-      {:ex_ratatui, git: "https://github.com/quaywin/ex_ratatui.git", branch: "main", override: true},
+      {:ex_ratatui, "~> 0.11"},
+      {:phoenix_ex_ratatui, "~> 0.2"},
+      {:phoenix, "~> 1.7"},
+      {:phoenix_live_view, "~> 1.0"},
+      {:phoenix_pubsub, "~> 2.1"},
+      {:bandit, "~> 1.5"},
+      {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:burrito, "~> 1.0", runtime: false}
     ]
   end

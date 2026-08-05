@@ -2,7 +2,7 @@ defmodule DBData.UI.Components.CellDetailModal do
   @moduledoc """
   Cell Detail Inspector popup for viewing data grid cell content.
   Auto-detects JSON structures and pretty-prints them.
-  Supports format toggling (:json, :text, :raw), line wrapping, and scrolling.
+  Supports 16-byte UUID decoding, format toggling (:json, :text, :raw), line wrapping, and scrolling.
   """
 
   @formats [:json, :text, :raw]
@@ -23,7 +23,7 @@ defmodule DBData.UI.Components.CellDetailModal do
           row_index: integer() | nil,
           raw_value: any(),
           format: :json | :text | :raw,
-          detected_type: :json | :text | :nil | :primitive,
+          detected_type: :json | :text | :nil | :primitive | :uuid | :binary,
           formatted_value: String.t(),
           scroll_offset: non_neg_integer(),
           wrap_lines: boolean()
@@ -64,7 +64,7 @@ defmodule DBData.UI.Components.CellDetailModal do
   @doc """
   Handles keys for scrolling, format toggling, and line wrapping.
   """
-  def handle_key(%__MODULE__{} = modal, key) when key in ["f", :tab] do
+  def handle_key(%__MODULE__{} = modal, key) when key in ["f", "F", :tab] do
     idx = Enum.find_index(@formats, &(&1 == modal.format)) || 0
     next_fmt = Enum.at(@formats, rem(idx + 1, length(@formats)))
     new_formatted = format_value(modal.raw_value, next_fmt)
@@ -103,10 +103,13 @@ defmodule DBData.UI.Components.CellDetailModal do
 
     title =
       if modal.column do
-        "CELL INSPECTOR — [" <> to_string(modal.column) <> "]"
+        "🔍 CELL INSPECTOR — [" <> to_string(modal.column) <> "]"
       else
-        "CELL INSPECTOR"
+        "🔍 CELL INSPECTOR"
       end
+
+    content_str = Enum.join(visible_lines, "\n")
+    status_hint = "\n───── [ Format: #{modal.format} | Enter/Esc: Close | ↑/↓: Scroll ] ─────"
 
     %{
       title: title,
@@ -115,6 +118,7 @@ defmodule DBData.UI.Components.CellDetailModal do
       row_index: modal.row_index,
       format: modal.format,
       detected_type: modal.detected_type,
+      content: content_str <> status_hint,
       lines: visible_lines,
       total_lines: length(all_lines),
       scroll_offset: modal.scroll_offset,
@@ -123,6 +127,10 @@ defmodule DBData.UI.Components.CellDetailModal do
   end
 
   defp analyze_and_format(nil), do: {:nil, :text, "<NULL>"}
+
+  defp analyze_and_format(<<_::128>> = uuid_bin) do
+    {:uuid, :text, DBData.Formatter.format_uuid(uuid_bin)}
+  end
 
   defp analyze_and_format(value) when is_map(value) or is_list(value) do
     case Jason.encode(value, pretty: true) do
@@ -134,17 +142,26 @@ defmodule DBData.UI.Components.CellDetailModal do
   defp analyze_and_format(value) when is_binary(value) do
     trimmed = String.trim(value)
 
-    if (String.starts_with?(trimmed, "{") and String.ends_with?(trimmed, "}")) or
-         (String.starts_with?(trimmed, "[") and String.ends_with?(trimmed, "]")) do
-      case Jason.decode(trimmed) do
-        {:ok, parsed} when is_map(parsed) or is_list(parsed) ->
-          {:json, :json, Jason.encode!(parsed, pretty: true)}
+    cond do
+      (String.starts_with?(trimmed, "{") and String.ends_with?(trimmed, "}")) or
+          (String.starts_with?(trimmed, "[") and String.ends_with?(trimmed, "]")) ->
+        case Jason.decode(trimmed) do
+          {:ok, parsed} when is_map(parsed) or is_list(parsed) ->
+            {:json, :json, Jason.encode!(parsed, pretty: true)}
 
-        _ ->
-          {:text, :text, value}
-      end
-    else
-      {:text, :text, value}
+          _ ->
+            if String.printable?(value) do
+              {:text, :text, value}
+            else
+              {:binary, :raw, DBData.Formatter.format_cell_detail(value)}
+            end
+        end
+
+      String.printable?(value) ->
+        {:text, :text, value}
+
+      true ->
+        {:binary, :raw, DBData.Formatter.format_cell_detail(value)}
     end
   end
 
@@ -165,7 +182,7 @@ defmodule DBData.UI.Components.CellDetailModal do
   defp format_value(value, :text) do
     cond do
       is_nil(value) -> "<NULL>"
-      is_binary(value) -> value
+      is_binary(value) -> DBData.Formatter.format_cell_detail(value)
       true -> to_string(value)
     end
   end

@@ -4,6 +4,88 @@ defmodule DBData.UI.Components.Sidebar do
   """
 
   @doc """
+  Loads connection profiles from ConfigStore and builds hierarchical tree nodes.
+  """
+  def load_nodes do
+    profiles =
+      try do
+        DBData.ConfigStore.list_profiles()
+      catch
+        _, _ -> []
+      end
+
+    if profiles == [] do
+      [
+        %{
+          id: "no_conn_prompt",
+          label: "(No connections configured)",
+          type: :connection,
+          expanded?: true,
+          children: [
+            %{
+              id: "add_conn_hint",
+              label: "Press [a] to Add Connection",
+              type: :schema,
+              expanded?: false,
+              children: []
+            }
+          ]
+        }
+      ]
+    else
+      Enum.map(profiles, fn profile ->
+        driver_label = String.upcase(to_string(profile.driver))
+        display_name = if profile.name && profile.name != "", do: profile.name, else: "Connection"
+        db_label = if profile.database && profile.database != "", do: profile.database, else: "public"
+
+        tables = fetch_schema_tables(profile)
+
+        table_nodes =
+          Enum.map(tables, fn tbl ->
+            %{
+              id: "#{profile.id}_tbl_#{tbl}",
+              label: tbl,
+              type: :table,
+              children: []
+            }
+          end)
+
+        %{
+          id: profile.id,
+          label: "#{display_name} (#{driver_label})",
+          type: :connection,
+          expanded?: true,
+          children: [
+            %{
+              id: "#{profile.id}_schema_#{db_label}",
+              label: db_label,
+              type: :schema,
+              expanded?: true,
+              children: table_nodes
+            }
+          ]
+        }
+      end)
+    end
+  end
+
+  defp fetch_schema_tables(profile) do
+    case DBData.ConnectionWorker.start_link(profile) do
+      {:ok, worker} ->
+        try do
+          DBData.SchemaInspector.list_tables(worker, profile.driver)
+        after
+          DBData.ConnectionWorker.stop(worker)
+        end
+
+      _ ->
+        []
+    end
+  rescue
+    _ -> []
+  end
+
+  @doc """
   Flattens hierarchical tree nodes into visible flat items based on `expanded?` state.
   """
   @spec flatten_visible_nodes([map()], String.t() | nil, integer()) :: [map()]
@@ -50,13 +132,39 @@ defmodule DBData.UI.Components.Sidebar do
         if prev_node, do: %{app | selected_tree_node_id: prev_node.id}, else: app
 
       :right ->
-        update_node_expanded(app, sel_id, true)
+        selected_item = Enum.find(visible, &(&1.id == sel_id))
+
+        cond do
+          selected_item && selected_item.has_children? and not selected_item.expanded? ->
+            update_node_expanded(app, sel_id, true)
+
+          true ->
+            DBData.UI.App.set_focus(app, :datagrid)
+        end
 
       :left ->
-        update_node_expanded(app, sel_id, false)
+        selected_item = Enum.find(visible, &(&1.id == sel_id))
 
-      :enter ->
-        toggle_node_expanded(app, sel_id)
+        if selected_item && selected_item.expanded? do
+          update_node_expanded(app, sel_id, false)
+        else
+          app
+        end
+
+      k when k in [:enter, "r", "R"] ->
+        selected_item = Enum.find(visible, &(&1.id == sel_id))
+
+        if selected_item && selected_item.type in [:table, :view] do
+          load_table_data(app, selected_item.label)
+        else
+          toggle_node_expanded(app, sel_id)
+        end
+
+      k when k in ["a", "A", {:ctrl, "a"}] ->
+        DBData.UI.App.push_modal(app, DBData.UI.Components.ConnectionModal.new())
+
+      k when k in ["e", "E", {:ctrl, "e"}] ->
+        DBData.UI.App.push_modal(app, DBData.UI.Components.ConnectionModal.new())
 
       _other ->
         app
@@ -64,10 +172,98 @@ defmodule DBData.UI.Components.Sidebar do
   end
 
   @doc """
+  Loads inspect data for selected table and switches to Table View.
+  Executes SELECT * FROM table LIMIT 100 on live connection if available.
+  """
+  def load_table_data(app, table_name) do
+    profiles =
+      try do
+        DBData.ConfigStore.list_profiles()
+      catch
+        _, _ -> []
+      end
+
+    sel_id = app.selected_tree_node_id
+
+    profile =
+      Enum.find(profiles, fn p -> sel_id && String.starts_with?(sel_id, p.id) end) ||
+        List.first(profiles)
+
+    {columns, rows, status_msg} =
+      if profile do
+        case fetch_real_table_data(profile, table_name) do
+          {:ok, cols, data_rows} ->
+            {cols, data_rows, "Loaded table '#{table_name}' (#{length(data_rows)} rows)"}
+
+          {:error, reason} ->
+            msg = if is_binary(reason), do: reason, else: inspect(reason)
+            {["error"], [[msg]], "Error loading table '#{table_name}': #{msg}"}
+        end
+      else
+        {["info"], [["No database connection configured"]], "No database connection configured"}
+      end
+
+    grid = DBData.UI.Components.DataGrid.new(columns, rows)
+
+    app
+    |> DBData.UI.App.switch_view(:table_view)
+    |> Map.put(:selected_table, table_name)
+    |> Map.put(:datagrid_state, grid)
+    |> Map.put(:status_message, status_msg)
+  end
+
+  defp fetch_real_table_data(profile, table_name) do
+    case DBData.ConnectionWorker.start_link(profile) do
+      {:ok, pid} ->
+        try do
+          sql =
+            case profile.driver do
+              :sqlite -> "SELECT * FROM \"#{table_name}\" LIMIT 100;"
+              :mysql -> "SELECT * FROM `#{table_name}` LIMIT 100;"
+              _ -> "SELECT * FROM \"#{table_name}\" LIMIT 100;"
+            end
+
+          case DBData.ConnectionWorker.execute_query(pid, sql) do
+            {:ok, %{columns: cols, rows: rows}} ->
+              str_rows = Enum.map(rows, fn r -> Enum.map(r, &to_string/1) end)
+              {:ok, cols, str_rows}
+
+            {:error, reason} ->
+              msg = if is_binary(reason), do: reason, else: inspect(reason)
+              {:error, msg}
+
+            _ ->
+              {:error, "Failed to query table"}
+          end
+        after
+          DBData.ConnectionWorker.stop(pid)
+        end
+
+      {:error, reason} ->
+        msg = if is_binary(reason), do: reason, else: inspect(reason)
+        {:error, msg}
+
+      _ ->
+        {:error, "Cannot connect to database"}
+    end
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  @doc """
   Renders tree view state into structured render map for the sidebar area.
+  Returns items, selected_index, and lines for ExRatatui.Widgets.List widget rendering.
   """
   def render(app, area) do
     visible = flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
+    selected_idx = Enum.find_index(visible, &(&1.id == app.selected_tree_node_id)) || 0
+
+    items =
+      Enum.map(visible, fn item ->
+        indent = String.duplicate("  ", item.depth)
+        icon = type_icon(item.type, item.expanded?, item.has_children?)
+        "#{indent}#{icon} #{item.label}"
+      end)
 
     lines =
       Enum.map(visible, fn item ->
@@ -85,7 +281,9 @@ defmodule DBData.UI.Components.Sidebar do
     %{
       title: "CONNECTIONS / SCHEMA",
       area: area,
+      items: items,
       lines: lines,
+      selected_index: selected_idx,
       selected_id: app.selected_tree_node_id
     }
   end

@@ -7,12 +7,12 @@ defmodule DBData.UI.App do
   use ExRatatui.App
 
   alias DBData.UI.Components.DataGrid
-  alias DBData.UI.Components.LogPane
   alias DBData.UI.Components.Sidebar
   alias DBData.UI.Components.SQLEditor
   alias DBData.UI.Renderer
 
-  @type focus_pane :: :sidebar | :editor | :datagrid | :log
+  @type focus_pane :: :sidebar | :editor | :datagrid
+  @type active_view :: :table_view | :query_view
 
   @type tab :: %{
           id: String.t(),
@@ -23,13 +23,14 @@ defmodule DBData.UI.App do
 
   @type t :: %__MODULE__{
           focus: focus_pane(),
+          active_view: active_view(),
+          selected_table: String.t() | nil,
           tabs: [tab()],
           active_tab_id: String.t() | nil,
           modals: [map()],
           sidebar_nodes: [map()],
           selected_tree_node_id: String.t() | nil,
           datagrid_state: DataGrid.t() | nil,
-          log_state: LogPane.t() | nil,
           mouse_enabled: boolean(),
           window_size: {pos_integer(), pos_integer()},
           status_message: String.t()
@@ -37,19 +38,20 @@ defmodule DBData.UI.App do
 
   defstruct [
     focus: :sidebar,
+    active_view: :table_view,
+    selected_table: nil,
     tabs: [],
     active_tab_id: nil,
     modals: [],
     sidebar_nodes: [],
     selected_tree_node_id: nil,
     datagrid_state: nil,
-    log_state: nil,
     mouse_enabled: true,
     window_size: {120, 40},
     status_message: "Ready"
   ]
 
-  @panes [:sidebar, :editor, :datagrid, :log]
+  @panes [:sidebar, :editor, :datagrid]
 
   # --- ExRatatui.App Callbacks ---
 
@@ -90,12 +92,17 @@ defmodule DBData.UI.App do
   def handle_event(%ExRatatui.Event.Mouse{} = mouse, state) do
     col = Map.get(mouse, :column) || Map.get(mouse, :x) || 0
     row = Map.get(mouse, :row) || Map.get(mouse, :y) || 0
-    kind = Map.get(mouse, :kind, :down)
+    kind = Map.get(mouse, :kind) || Map.get(mouse, :button) || :down
+    kind_str = to_string(kind)
 
     event =
-      case kind do
-        :down -> {:click, col, row}
-        _ -> {:mouse_event, kind, col, row}
+      cond do
+        kind_str in ["down", "click"] -> {:click, col, row}
+        kind_str in ["scroll_up", "up"] and Map.has_key?(mouse, :kind) and to_string(mouse.kind) == "scroll_up" -> {:scroll, :up, col, row}
+        kind_str in ["scroll_down", "down"] and Map.has_key?(mouse, :kind) and to_string(mouse.kind) == "scroll_down" -> {:scroll, :down, col, row}
+        kind_str == "scroll_up" -> {:scroll, :up, col, row}
+        kind_str == "scroll_down" -> {:scroll, :down, col, row}
+        true -> {:mouse_event, kind, col, row}
       end
 
     new_state = handle_mouse(state, event)
@@ -105,7 +112,16 @@ defmodule DBData.UI.App do
   def handle_event(_event, state), do: {:noreply, state}
 
   @impl true
-  def render(state, _frame \\ nil) do
+  def render(state, frame) do
+    state =
+      case frame do
+        %ExRatatui.Frame{width: w, height: h} when w > 0 and h > 0 ->
+          %{state | window_size: {w, h}}
+
+        _ ->
+          state
+      end
+
     Renderer.render(state)
   end
 
@@ -146,25 +162,37 @@ defmodule DBData.UI.App do
     default_tab = %{
       id: "tab_1",
       name: "Query 1",
-      content: "SELECT 1;",
+      content: "",
       cursor: {0, 0}
     }
 
+    default_grid = DataGrid.new([], [])
+
+    nodes = Sidebar.load_nodes()
+    first_id = case List.first(nodes) do nil -> nil; n -> n.id end
+
     base = %__MODULE__{
+      active_view: :table_view,
+      selected_table: nil,
+      datagrid_state: default_grid,
       tabs: [default_tab],
-      active_tab_id: "tab_1"
+      active_tab_id: "tab_1",
+      sidebar_nodes: nodes,
+      selected_tree_node_id: first_id
     }
 
     struct(base, opts)
   end
 
   @doc """
-  Cycles focus between main layout panes (:sidebar -> :editor -> :datagrid -> :log).
+  Cycles focus between main layout panes (:sidebar -> :editor -> :datagrid).
+  In :table_view mode, cycles between :sidebar and :datagrid.
   """
   @spec cycle_focus(t(), :next | :prev) :: t()
-  def cycle_focus(%__MODULE__{focus: current} = app, direction \\ :next) do
-    idx = Enum.find_index(@panes, &(&1 == current)) || 0
-    cnt = length(@panes)
+  def cycle_focus(%__MODULE__{focus: current, active_view: active_view} = app, direction \\ :next) do
+    panes = if active_view == :table_view, do: [:sidebar, :datagrid], else: @panes
+    idx = Enum.find_index(panes, &(&1 == current)) || 0
+    cnt = length(panes)
 
     next_idx =
       case direction do
@@ -172,8 +200,25 @@ defmodule DBData.UI.App do
         :prev -> rem(idx - 1 + cnt, cnt)
       end
 
-    %{app | focus: Enum.at(@panes, next_idx)}
+    %{app | focus: Enum.at(panes, next_idx)}
   end
+
+  @doc """
+  Switches right side active view mode between :table_view and :query_view.
+  """
+  @spec switch_view(t(), :table_view | :query_view) :: t()
+  def switch_view(%__MODULE__{} = app, view) when view in [:table_view, :query_view] do
+    new_focus =
+      if view == :table_view and app.focus == :editor do
+        :datagrid
+      else
+        app.focus
+      end
+
+    %{app | active_view: view, focus: new_focus}
+  end
+
+  def switch_view(app, _invalid_view), do: app
 
   @doc """
   Sets active focus pane if valid.
@@ -261,20 +306,129 @@ defmodule DBData.UI.App do
   Dispatches keyboard events to focus pane or modal handler.
   """
   @spec handle_key(t(), any()) :: t()
-  def handle_key(%__MODULE__{modals: [_top | _rest]} = app, :esc) do
-    {_popped, app} = pop_modal(app)
-    app
+  def handle_key(%__MODULE__{modals: [top | rest]} = app, key) do
+    case key do
+      :esc ->
+        {_popped, app} = pop_modal(app)
+        app
+
+      _ ->
+        cond do
+          match?(%DBData.UI.Components.ConnectionModal{}, top) or match?(%{type: :connection_modal}, top) ->
+            cm = case top do
+              %DBData.UI.Components.ConnectionModal{} = modal -> modal
+              _ -> DBData.UI.Components.ConnectionModal.new()
+            end
+
+            case DBData.UI.Components.ConnectionModal.handle_key(cm, key) do
+              {:save, modal} ->
+                profile = DBData.UI.Components.ConnectionModal.to_profile(modal)
+                try do
+                  DBData.ConfigStore.put_profile(profile)
+                catch
+                  _, _ -> :ok
+                end
+
+                {_popped, app} = pop_modal(app)
+                updated_nodes = Sidebar.load_nodes()
+                %{app | sidebar_nodes: updated_nodes, selected_tree_node_id: profile.id}
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %DBData.UI.Components.ConnectionModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          match?(%DBData.UI.Components.CellDetailModal{}, top) or match?(%{type: :cell_detail_modal}, top) ->
+            case key do
+              k when k in [:enter, :space, :esc, "q", "Q"] ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              _ ->
+                cell_modal =
+                  case top do
+                    %DBData.UI.Components.CellDetailModal{} = m -> m
+                    %{raw_value: val} -> DBData.UI.Components.CellDetailModal.new(val, column: Map.get(top, :column))
+                    %{content: val} -> DBData.UI.Components.CellDetailModal.new(val, column: Map.get(top, :column))
+                    _ -> DBData.UI.Components.CellDetailModal.new("")
+                  end
+
+                updated = DBData.UI.Components.CellDetailModal.handle_key(cell_modal, key)
+                %{app | modals: [updated | rest]}
+            end
+
+          match?(%DBData.UI.Components.FilterExportModal{}, top) ->
+            case DBData.UI.Components.FilterExportModal.handle_key(top, key) do
+              {:apply, _res, modal} ->
+                {_popped, app} = pop_modal(app)
+                %{app | status_message: "Filter applied: " <> modal.where_clause}
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %DBData.UI.Components.FilterExportModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          match?(%{type: :filter_modal}, top) ->
+            fe_modal = DBData.UI.Components.FilterExportModal.new(:filter)
+
+            case DBData.UI.Components.FilterExportModal.handle_key(fe_modal, key) do
+              {:apply, _res, _m} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              {:cancel, _m} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %DBData.UI.Components.FilterExportModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          match?(%{type: :export_modal}, top) ->
+            fe_modal = DBData.UI.Components.FilterExportModal.new(:export)
+
+            case DBData.UI.Components.FilterExportModal.handle_key(fe_modal, key) do
+              {:apply, _res, _m} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              {:cancel, _m} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %DBData.UI.Components.FilterExportModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          true ->
+            if key in [:enter, :space] do
+              {_popped, app} = pop_modal(app)
+              app
+            else
+              app
+            end
+        end
+    end
   end
 
   def handle_key(%__MODULE__{} = app, :tab), do: cycle_focus(app, :next)
   def handle_key(%__MODULE__{} = app, :shift_tab), do: cycle_focus(app, :prev)
-  def handle_key(%__MODULE__{} = app, {:ctrl, "1"}), do: set_focus(app, :sidebar)
-  def handle_key(%__MODULE__{} = app, :f1), do: set_focus(app, :sidebar)
-  def handle_key(%__MODULE__{} = app, {:ctrl, "2"}), do: set_focus(app, :editor)
-  def handle_key(%__MODULE__{} = app, :f2), do: set_focus(app, :editor)
+  def handle_key(%__MODULE__{} = app, :f1), do: switch_view(app, :table_view)
+  def handle_key(%__MODULE__{} = app, :f2), do: switch_view(app, :query_view)
+
+  def handle_key(%__MODULE__{} = app, {:ctrl, "1"}), do: switch_view(app, :table_view)
+  def handle_key(%__MODULE__{} = app, {:ctrl, "2"}), do: switch_view(app, :query_view)
   def handle_key(%__MODULE__{} = app, {:ctrl, "3"}), do: set_focus(app, :datagrid)
-  def handle_key(%__MODULE__{} = app, :f3), do: set_focus(app, :datagrid)
-  def handle_key(%__MODULE__{} = app, {:ctrl, "4"}), do: set_focus(app, :log)
+
+  def handle_key(%__MODULE__{focus: focus} = app, "1") when focus != :editor, do: switch_view(app, :table_view)
+  def handle_key(%__MODULE__{focus: focus} = app, "2") when focus != :editor, do: switch_view(app, :query_view)
+  def handle_key(%__MODULE__{focus: focus} = app, "3") when focus != :editor, do: set_focus(app, :datagrid)
 
   def handle_key(%__MODULE__{focus: :sidebar} = app, key) do
     Sidebar.handle_key(app, key)
@@ -290,31 +444,129 @@ defmodule DBData.UI.App do
     %{app | datagrid_state: updated_grid}
   end
 
-  def handle_key(%__MODULE__{focus: :log} = app, key) do
-    log_state = app.log_state || LogPane.new()
-    {app, updated_log_state} = LogPane.handle_key(app, log_state, key)
-    %{app | log_state: updated_log_state}
-  end
-
   def handle_key(%__MODULE__{} = app, _key), do: app
 
   @doc """
-  Handles SGR mouse click events to switch focus or interact with UI chunks.
+  Handles mouse click and scroll wheel events.
   """
   @spec handle_mouse(t(), any()) :: t()
-  def handle_mouse(%__MODULE__{window_size: ws} = app, {:click, x, y}) do
-    layout = Renderer.layout(ws)
+  def handle_mouse(%__MODULE__{window_size: ws, active_view: active_view} = app, {:scroll, dir, x, y}) do
+    layout = Renderer.layout(ws, active_view)
 
     cond do
-      inside_area?(x, y, layout.sidebar) -> set_focus(app, :sidebar)
-      inside_area?(x, y, layout.editor) -> set_focus(app, :editor)
-      inside_area?(x, y, layout.datagrid) -> set_focus(app, :datagrid)
-      inside_area?(x, y, layout.log) -> set_focus(app, :log)
-      true -> app
+      inside_area?(x, y, layout.sidebar) ->
+        Sidebar.handle_key(app, if(dir == :up, do: :up, else: :down))
+
+      layout.datagrid.height > 0 and inside_area?(x, y, layout.datagrid) ->
+        grid = app.datagrid_state || DataGrid.new()
+        vh = max(1, layout.datagrid.height - 3)
+        updated_grid = DataGrid.move_selection(grid, if(dir == :up, do: :up, else: :down), vh)
+        %{app | datagrid_state: updated_grid, focus: :datagrid}
+
+      true ->
+        app
+    end
+  end
+
+  def handle_mouse(%__MODULE__{window_size: ws, active_view: active_view} = app, {:click, x, y}) do
+    layout = Renderer.layout(ws, active_view)
+
+    cond do
+      inside_area?(x, y, layout.footer) ->
+        cond do
+          x >= 0 and x <= 22 -> switch_view(app, :table_view)
+          x >= 23 and x <= 45 -> switch_view(app, :query_view)
+          true -> app
+        end
+
+      inside_area?(x, y, layout.sidebar) ->
+        app = set_focus(app, :sidebar)
+        row_offset = max(0, y - 1)
+
+        visible = Sidebar.flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
+        target_item = Enum.at(visible, row_offset)
+
+        if target_item do
+          app = %{app | selected_tree_node_id: target_item.id}
+
+          if target_item.type in [:table, :view] do
+            Sidebar.load_table_data(app, target_item.label)
+          else
+            app
+          end
+        else
+          app
+        end
+
+      layout.editor.height > 0 and inside_area?(x, y, layout.editor) ->
+        set_focus(app, :editor)
+
+      layout.datagrid.height > 0 and inside_area?(x, y, layout.datagrid) ->
+        handle_datagrid_click(app, x, y, layout)
+
+      true ->
+        app
     end
   end
 
   def handle_mouse(app, _event), do: app
+
+  defp handle_datagrid_click(app, x, y, layout) do
+    app = set_focus(app, :datagrid)
+    grid = app.datagrid_state || DataGrid.new()
+
+    grid_y = layout.datagrid.y
+    grid_x = layout.datagrid.x
+
+    header_offset = 2
+    rel_y = y - grid_y - header_offset
+
+    if rel_y >= 0 and grid.rows != [] do
+      viewport_h = max(1, layout.datagrid.height - 3)
+      max_top = max(0, length(grid.rows) - viewport_h)
+      curr_scroll = min(grid.scroll_offset || 0, max_top)
+
+      target_row = max(0, min(length(grid.rows) - 1, rel_y + curr_scroll))
+      rel_x = max(0, x - grid_x - 2)
+
+      target_col =
+        if grid.columns != [] do
+          widths =
+            Enum.map(grid.columns, fn col_name ->
+              String.length(to_string(col_name)) + 4
+            end)
+
+          Enum.reduce_while(Enum.with_index(widths), {0, 0}, fn {w, c_idx}, {acc_x, _} ->
+            next_x = acc_x + w
+            if rel_x < next_x do
+              {:halt, {acc_x, c_idx}}
+            else
+              {:cont, {next_x, min(length(grid.columns) - 1, c_idx + 1)}}
+            end
+          end)
+          |> elem(1)
+        else
+          0
+        end
+
+      updated_grid = %{grid | selected_cell: {target_row, target_col}, scroll_offset: curr_scroll, mode: :selecting}
+
+      if grid.mode == :selecting and grid.selected_cell == {target_row, target_col} do
+        raw_cell = grid.rows |> Enum.at(target_row, []) |> Enum.at(target_col, nil)
+        col_name = Enum.at(grid.columns, target_col, "Cell")
+
+        cell_modal = DBData.UI.Components.CellDetailModal.new(raw_cell, column: col_name, row_index: target_row + 1)
+
+        app
+        |> Map.put(:datagrid_state, updated_grid)
+        |> push_modal(cell_modal)
+      else
+        Map.put(app, :datagrid_state, updated_grid)
+      end
+    else
+      app
+    end
+  end
 
   defp inside_area?(x, y, %{x: ax, y: ay, width: aw, height: ah}) do
     x >= ax and x < ax + aw and y >= ay and y < ay + ah

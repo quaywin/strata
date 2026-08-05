@@ -18,15 +18,27 @@ defmodule DBData.SSHProfileStore do
 
   @spec get_profile(String.t()) :: SSHProfile.t() | nil
   def get_profile(id) when is_binary(id) do
-    case :ets.lookup(@table_name, id) do
-      [{^id, profile}] -> profile
-      [] -> nil
+    try do
+      case :ets.lookup(@table_name, id) do
+        [{^id, profile}] -> profile
+        [] -> nil
+      end
+    rescue
+      _ -> nil
+    catch
+      _, _ -> nil
     end
   end
 
   @spec list_profiles() :: [SSHProfile.t()]
   def list_profiles do
-    :ets.select(@table_name, [{{:_, :"$1"}, [], [:"$1"]}])
+    try do
+      :ets.select(@table_name, [{{:_, :"$1"}, [], [:"$1"]}])
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
   end
 
   @spec delete_profile(String.t()) :: :ok

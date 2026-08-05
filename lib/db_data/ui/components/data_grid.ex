@@ -1,10 +1,11 @@
 defmodule DBData.UI.Components.DataGrid do
   @moduledoc """
-  Tabular Data Grid component supporting cell cursor navigation, pagination,
-  and formatted text rendering.
+  Tabular Data Grid component supporting Browsing mode (clean line scrolling)
+  and Select mode (cell cursor, highlighting, copy, and cell inspection), matching Caudata's UX design.
   """
 
   @type cell :: {non_neg_integer(), non_neg_integer()}
+  @type mode :: :browsing | :selecting
 
   defstruct [
     columns: [],
@@ -12,7 +13,9 @@ defmodule DBData.UI.Components.DataGrid do
     selected_cell: {0, 0},
     page: 1,
     page_size: 20,
-    total_rows: 0
+    total_rows: 0,
+    mode: :browsing,
+    scroll_offset: 0
   ]
 
   @type t :: %__MODULE__{
@@ -21,7 +24,9 @@ defmodule DBData.UI.Components.DataGrid do
           selected_cell: cell(),
           page: pos_integer(),
           page_size: pos_integer(),
-          total_rows: non_neg_integer()
+          total_rows: non_neg_integer(),
+          mode: mode(),
+          scroll_offset: non_neg_integer()
         }
 
   @doc """
@@ -32,6 +37,8 @@ defmodule DBData.UI.Components.DataGrid do
     page_size = Keyword.get(opts, :page_size, 20)
     page = Keyword.get(opts, :page, 1)
     selected_cell = Keyword.get(opts, :selected_cell, {0, 0})
+    mode = Keyword.get(opts, :mode, :browsing)
+    scroll_offset = Keyword.get(opts, :scroll_offset, 0)
 
     %__MODULE__{
       columns: columns,
@@ -39,7 +46,9 @@ defmodule DBData.UI.Components.DataGrid do
       selected_cell: selected_cell,
       page: page,
       page_size: page_size,
-      total_rows: length(rows)
+      total_rows: length(rows),
+      mode: mode,
+      scroll_offset: scroll_offset
     }
   end
 
@@ -63,30 +72,85 @@ defmodule DBData.UI.Components.DataGrid do
   end
 
   @doc """
-  Moves cell selection cursor within page bounds according to direction.
+  Moves cell selection cursor or browsing scroll position according to direction and viewport height.
   """
-  @spec move_selection(t(), atom()) :: t()
-  def move_selection(%__MODULE__{} = grid, direction) do
-    p_rows = page_rows(grid)
-    row_count = length(p_rows)
+  @spec move_selection(t(), atom(), pos_integer()) :: t()
+  def move_selection(%__MODULE__{} = grid, direction, viewport_h \\ 20) do
+    row_count = length(grid.rows)
     col_count = length(grid.columns)
 
-    {r, c} = grid.selected_cell
+    max_top = max(0, row_count - max(1, viewport_h))
+    max_row = max(0, row_count - 1)
 
-    new_cell =
+    {r, c} = grid.selected_cell
+    curr_scroll = grid.scroll_offset || 0
+
+    {new_r, new_scroll} =
       case direction do
-        :up -> {max(0, r - 1), c}
-        :down -> {min(max(0, row_count - 1), r + 1), c}
-        :left -> {r, max(0, c - 1)}
-        :right -> {r, min(max(0, col_count - 1), c + 1)}
-        :home -> {r, 0}
-        :end -> {r, max(0, col_count - 1)}
-        :page_up -> {0, c}
-        :page_down -> {max(0, row_count - 1), c}
-        _other -> {r, c}
+        :up ->
+          if grid.mode == :browsing do
+            s = max(0, curr_scroll - 1)
+            nr = max(0, r - 1)
+            {nr, s}
+          else
+            nr = max(0, r - 1)
+            ns =
+              cond do
+                nr < curr_scroll -> nr
+                nr >= curr_scroll + viewport_h -> min(max_top, nr - viewport_h + 1)
+                true -> curr_scroll
+              end
+
+            {nr, ns}
+          end
+
+        :down ->
+          if grid.mode == :browsing do
+            s = min(max_top, curr_scroll + 1)
+            nr = min(max_row, r + 1)
+            {nr, s}
+          else
+            nr = min(max_row, r + 1)
+            ns =
+              cond do
+                nr >= curr_scroll + viewport_h -> min(max_top, nr - viewport_h + 1)
+                nr < curr_scroll -> nr
+                true -> curr_scroll
+              end
+
+            {nr, ns}
+          end
+
+        :home ->
+          {0, 0}
+
+        :end ->
+          if grid.mode == :browsing do
+            {max_top, max_top}
+          else
+            {max_row, max_top}
+          end
+
+        :page_up ->
+          s = max(0, curr_scroll - 10)
+          {s, s}
+
+        :page_down ->
+          s = min(max_top, curr_scroll + 10)
+          {s, s}
+
+        _other ->
+          {r, curr_scroll}
       end
 
-    %{grid | selected_cell: new_cell}
+    new_c =
+      case direction do
+        :left -> max(0, c - 1)
+        :right -> min(max(0, col_count - 1), c + 1)
+        _other -> c
+      end
+
+    %{grid | selected_cell: {new_r, new_c}, scroll_offset: new_scroll}
   end
 
   @doc """
@@ -124,32 +188,120 @@ defmodule DBData.UI.Components.DataGrid do
   def last_page(grid), do: set_page(grid, total_pages(grid))
 
   @doc """
-  Handles key events when DataGrid pane is active.
+  Handles key events for DataGrid depending on mode (:browsing vs :selecting).
   """
-  def handle_key(app, %__MODULE__{} = grid, key) do
-    updated_grid =
-      case key do
-        dir when dir in [:up, :down, :left, :right, :home, :end, :page_up, :page_down] ->
-          move_selection(grid, dir)
+  def handle_key(app, %__MODULE__{mode: :browsing} = grid, key) do
+    case key do
+      :left ->
+        app = DBData.UI.App.set_focus(app, :sidebar)
+        {app, grid}
 
-        :n ->
-          next_page(grid)
+      k when k in ["v", "V", "s", "S", :enter, :space] ->
+        updated_grid = %{grid | mode: :selecting}
 
-        :p ->
-          prev_page(grid)
+        app =
+          Map.put(
+            app,
+            :status_message,
+            "SELECT MODE: Use ↑/↓/←/→ to select cells, [c] copy, [v/Esc] exit to Browsing"
+          )
 
-        {:ctrl, "n"} ->
-          next_page(grid)
+        {app, updated_grid}
 
-        {:ctrl, "p"} ->
-          prev_page(grid)
+      dir when dir in [:up, :down, :right, :home, :end, :page_up, :page_down] ->
+        updated_grid = move_selection(grid, dir)
+        {app, updated_grid}
 
-        _other ->
-          grid
-      end
+      k when k in ["f", "F", "/", {:ctrl, "f"}] ->
+        app = DBData.UI.App.push_modal(app, %{type: :filter_modal, title: "Filter Data"})
+        {app, grid}
 
-    {app, updated_grid}
+      k when k in ["e", "E", {:ctrl, "e"}] ->
+        app = DBData.UI.App.push_modal(app, %{type: :export_modal, title: "Export Data"})
+        {app, grid}
+
+      k when k in [:n, "n", "N", {:ctrl, "n"}] ->
+        {app, next_page(grid)}
+
+      k when k in [:p, "p", "P", {:ctrl, "p"}] ->
+        {app, prev_page(grid)}
+
+      _ ->
+        {app, grid}
+    end
   end
+
+  def handle_key(app, %__MODULE__{mode: :selecting} = grid, key) do
+    case key do
+      k when k in [:esc, "v", "V"] ->
+        updated_grid = %{grid | mode: :browsing}
+
+        app =
+          Map.put(
+            app,
+            :status_message,
+            "BROWSING MODE: Press [v] or [s] or click cell for Select Mode"
+          )
+
+        {app, updated_grid}
+
+      k when k in ["c", "C", "y", "Y", {:ctrl, "c"}] ->
+        {r, c} = grid.selected_cell
+        raw_cell = grid.rows |> Enum.at(r, []) |> Enum.at(c, nil)
+        col_name = Enum.at(grid.columns, c, "Cell")
+        val_str = DBData.Formatter.sanitize_cell(raw_cell)
+
+        app =
+          DBData.UI.App.push_modal(app, %{
+            type: :cell_detail_modal,
+            title: " 📋 COPIED CELL VALUE (#{col_name}) ",
+            content: "Copied value:\n\n#{val_str}\n\n[ Press Esc or Enter to close ]"
+          })
+
+        {app, grid}
+
+      k when k in [:enter, :space] ->
+        {r, c} = grid.selected_cell
+        raw_cell = grid.rows |> Enum.at(r, []) |> Enum.at(c, nil)
+        col_name = Enum.at(grid.columns, c, "Cell")
+        formatted_detail = DBData.Formatter.format_cell_detail(raw_cell)
+
+        modal_content = """
+        Column: #{col_name}  │  Row: #{r + 1}
+        ──────────────────────────────────────────────────
+        #{formatted_detail}
+
+        ──────────────────────────────────────────────────
+        [ Press Esc or Enter to close ]
+        """
+
+        app =
+          DBData.UI.App.push_modal(app, %{
+            type: :cell_detail_modal,
+            title: " 🔍 CELL DETAIL INSPECTOR (#{col_name}) ",
+            content: modal_content
+          })
+
+        {app, grid}
+
+      dir when dir in [:up, :down, :left, :right, :home, :end, :page_up, :page_down] ->
+        updated_grid = move_selection(grid, dir)
+        {app, updated_grid}
+
+      k when k in ["f", "F", "/", {:ctrl, "f"}] ->
+        app = DBData.UI.App.push_modal(app, %{type: :filter_modal, title: "Filter Data"})
+        {app, grid}
+
+      k when k in ["e", "E", {:ctrl, "e"}] ->
+        app = DBData.UI.App.push_modal(app, %{type: :export_modal, title: "Export Data"})
+        {app, grid}
+
+      _ ->
+        {app, grid}
+    end
+  end
+
+  def handle_key(app, grid, _key), do: {app, grid}
 
   @doc """
   Renders table layout data structure for given area.
@@ -184,7 +336,7 @@ defmodule DBData.UI.Components.DataGrid do
           |> Enum.with_index()
           |> Enum.map(fn {{val, width}, c_idx} ->
             str_val = String.pad_trailing(to_string(val), width)
-            is_selected? = grid.selected_cell == {r_idx, c_idx}
+            is_selected? = grid.mode == :selecting and grid.selected_cell == {r_idx, c_idx}
 
             if is_selected? do
               "[#{String.trim(str_val)}]" |> String.pad_trailing(width)
@@ -196,7 +348,7 @@ defmodule DBData.UI.Components.DataGrid do
 
         %{
           text: "│" <> cells <> "│",
-          selected_row?: elem(grid.selected_cell, 0) == r_idx
+          selected_row?: grid.mode == :selecting and elem(grid.selected_cell, 0) == r_idx
         }
       end)
 

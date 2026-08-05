@@ -8,7 +8,7 @@ defmodule DBData.UI.Components.Footer do
   """
   def render(app, area) do
     bindings = keybindings_for_app(app)
-    text = Enum.map_join(bindings, "  ", fn {key, label} -> "<#{key}> #{label}" end)
+    text = Enum.map_join(bindings, "  ", fn {key, label} -> "[#{key}] #{label}" end)
 
     %{
       area: area,
@@ -25,7 +25,7 @@ defmodule DBData.UI.Components.Footer do
 
     {actions, _offset} =
       Enum.reduce(bindings, {[], x_start}, fn {key_name, label}, {acc, x_acc} ->
-        str = "<#{key_name}> #{label}"
+        str = "[#{key_name}] #{label}"
         len = String.length(str)
 
         btn_area = %{
@@ -58,65 +58,44 @@ defmodule DBData.UI.Components.Footer do
 
   defp keybindings_for_app(%{focus: :sidebar}) do
     [
-      {"F1", "Connections"},
-      {"F2", "SQL Editor"},
-      {"F5", "Run Query"},
-      {"F6", "Table Data"},
-      {"Ctrl+A", "Add Conn"},
-      {"Tab", "Focus"},
+      {"Ctrl+1/2", "Table/Query View"},
+      {"Tab", "Focus Pane"},
+      {"a", "Add Conn"},
+      {"Enter", "Select/Open"},
       {"q", "Quit"}
     ]
   end
 
   defp keybindings_for_app(%{focus: :editor}) do
     [
-      {"F1", "Connections"},
-      {"F2", "SQL Editor"},
-      {"F5", "Run Query"},
+      {"Ctrl+1/2", "Table/Query View"},
+      {"Ctrl+Enter", "Run Query"},
+      {"Tab", "Focus Pane"},
       {"Ctrl+N", "New Tab"},
-      {"Ctrl+W", "Close Tab"},
-      {"Tab", "Focus"},
       {"q", "Quit"}
     ]
   end
 
   defp keybindings_for_app(%{focus: :datagrid}) do
     [
-      {"F1", "Connections"},
-      {"F2", "SQL Editor"},
-      {"F3", "Filter"},
-      {"Enter", "Cell Detail"},
-      {"Ctrl+E", "Export"},
-      {"Tab", "Focus"},
-      {"q", "Quit"}
-    ]
-  end
-
-  defp keybindings_for_app(%{focus: :log}) do
-    [
-      {"F1", "Connections"},
-      {"F2", "SQL Editor"},
-      {"Ctrl+L", "Clear Log"},
-      {"Tab", "Focus"},
+      {"Ctrl+1/2", "Table/Query View"},
+      {"Tab", "Focus Pane"},
+      {"f", "Filter"},
+      {"e", "Export"},
+      {"n/p", "Next/Prev Page"},
       {"q", "Quit"}
     ]
   end
 
   defp keybindings_for_app(_app) do
     [
-      {"F1", "Connections"},
-      {"F2", "Editor"},
-      {"F5", "Run"},
-      {"Tab", "Focus"},
+      {"Ctrl+1/2", "Table/Query View"},
+      {"Tab", "Focus Pane"},
+      {"Enter", "Action"},
       {"q", "Quit"}
     ]
   end
 
-  defp parse_key_symbol("F1"), do: :f1
-  defp parse_key_symbol("F2"), do: :f2
-  defp parse_key_symbol("F3"), do: :f3
-  defp parse_key_symbol("F5"), do: :f5
-  defp parse_key_symbol("F6"), do: :f6
   defp parse_key_symbol("Tab"), do: :tab
   defp parse_key_symbol("Esc"), do: :esc
   defp parse_key_symbol("Enter"), do: :enter

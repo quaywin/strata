@@ -25,7 +25,7 @@ defmodule DBData.UI.AppTest do
 
   describe "Focus management" do
     test "cycle_focus cycles through panes forward and backward" do
-      app = App.new(focus: :sidebar)
+      app = App.new(focus: :sidebar, active_view: :query_view)
 
       app = App.cycle_focus(app, :next)
       assert app.focus == :editor
@@ -34,13 +34,10 @@ defmodule DBData.UI.AppTest do
       assert app.focus == :datagrid
 
       app = App.cycle_focus(app, :next)
-      assert app.focus == :log
-
-      app = App.cycle_focus(app, :next)
       assert app.focus == :sidebar
 
       app = App.cycle_focus(app, :prev)
-      assert app.focus == :log
+      assert app.focus == :datagrid
     end
 
     test "set_focus sets specific pane if valid" do
@@ -94,11 +91,22 @@ defmodule DBData.UI.AppTest do
       assert popped2 == modal1
       assert app.modals == []
     end
+
+    test "switches active_view mode between table_view and query_view" do
+      app = App.new()
+      assert app.active_view in [:query_view, :table_view]
+
+      app = App.switch_view(app, :query_view)
+      assert app.active_view == :query_view
+
+      app = App.switch_view(app, :table_view)
+      assert app.active_view == :table_view
+    end
   end
 
   describe "Key event dispatching" do
     test "handles tab key to cycle focus" do
-      app = App.new(focus: :sidebar)
+      app = App.new(focus: :sidebar, active_view: :query_view)
 
       app = App.handle_key(app, :tab)
       assert app.focus == :editor
@@ -107,20 +115,20 @@ defmodule DBData.UI.AppTest do
       assert app.focus == :sidebar
     end
 
-    test "handles ctrl+1..4 shortcuts for pane focus" do
-      app = App.new()
+    test "handles ctrl+1..2 and 1..2 shortcuts for view mode switching" do
+      app = App.new(active_view: :query_view, focus: :sidebar)
+
+      app = App.handle_key(app, "1")
+      assert app.active_view == :table_view
+
+      app = App.handle_key(app, "2")
+      assert app.active_view == :query_view
 
       app = App.handle_key(app, {:ctrl, "1"})
-      assert app.focus == :sidebar
+      assert app.active_view == :table_view
 
       app = App.handle_key(app, {:ctrl, "2"})
-      assert app.focus == :editor
-
-      app = App.handle_key(app, {:ctrl, "3"})
-      assert app.focus == :datagrid
-
-      app = App.handle_key(app, {:ctrl, "4"})
-      assert app.focus == :log
+      assert app.active_view == :query_view
     end
 
     test "handles escape to pop modal if active" do
@@ -135,7 +143,7 @@ defmodule DBData.UI.AppTest do
 
   describe "Mouse event handling" do
     test "handles click inside pane bounds to switch focus" do
-      app = App.new(focus: :sidebar, window_size: {120, 40})
+      app = App.new(focus: :sidebar, active_view: :query_view, window_size: {120, 40})
 
       # Click in right editor area (e.g. x: 50, y: 5)
       app = App.handle_mouse(app, {:click, 50, 5})

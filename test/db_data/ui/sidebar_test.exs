@@ -93,6 +93,25 @@ defmodule DBData.UI.Components.SidebarTest do
       app = Sidebar.handle_key(app, :left)
       visible_after_collapse = Sidebar.flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
       refute Enum.any?(visible_after_collapse, &(&1.id == "conn_sqlite_logs"))
+
+      # Right on expanded node or leaf node switches focus to datagrid
+      app_expanded = Sidebar.handle_key(app, :right)
+      app_focused = Sidebar.handle_key(app_expanded, :right)
+      assert app_focused.focus == :datagrid
+
+      app_leaf = Map.put(app, :selected_tree_node_id, "conn_pg_public_users")
+      app_leaf_focused = Sidebar.handle_key(app_leaf, :right)
+      assert app_leaf_focused.focus == :datagrid
+    end
+
+    test "pressing enter on table node loads table data and switches to Table View", %{app: app} do
+      app = Map.put(app, :selected_tree_node_id, "conn_pg_public_users")
+      app = Sidebar.handle_key(app, :enter)
+
+      assert app.active_view == :table_view
+      assert app.selected_table == "users"
+      assert app.datagrid_state != nil
+      assert is_list(app.datagrid_state.columns)
     end
   end
 

@@ -4,6 +4,8 @@ defmodule DBData.Application do
   @impl true
   def start(_type, _args) do
     children = [
+      DBData.SSHProfileStore,
+      DBData.ConfigStore,
       {DynamicSupervisor, name: DBData.ConnectionSupervisor, strategy: :one_for_one}
     ]
 

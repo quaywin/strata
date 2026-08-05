@@ -7,7 +7,8 @@ defmodule DBData.MixProject do
       version: "0.1.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      releases: releases()
     ]
   end
 
@@ -15,6 +16,21 @@ defmodule DBData.MixProject do
     [
       extra_applications: [:logger, :ssh],
       mod: {DBData.Application, []}
+    ]
+  end
+
+  def releases do
+    [
+      dbdata: [
+        steps: [:assemble, &Burrito.wrap/1],
+        burrito: [
+          targets: [
+            macos_aarch64: [os: :darwin, cpu: :aarch64],
+            macos_x86_64: [os: :darwin, cpu: :x86_64],
+            linux_x86_64: [os: :linux, cpu: :x86_64]
+          ]
+        ]
+      ]
     ]
   end
 

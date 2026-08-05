@@ -3,3 +3,6 @@
 *.ez
 .fetch
 erl_crash.dump
+/burrito_out/
+/burrito_build/
+

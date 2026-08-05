@@ -1,10 +1,10 @@
-# dbdata 🗄️ — Modern Terminal Database Manager
+# strata 🗄️ — Modern Terminal Database Manager
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Elixir](https://img.shields.io/badge/Elixir-1.15%2B-purple.svg)](https://elixir-lang.org/)
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen.svg)]()
 
-`dbdata` là ứng dụng **Database TUI Manager** (Terminal User Interface) độc lập, hiệu năng cao cho Terminal, được thiết kế đồng bộ trải nghiệm TUI hiện đại (kế thừa các chuẩn UX tiên tiến từ `caudata`).
+`strata` là ứng dụng **Database TUI Manager** (Terminal User Interface) độc lập, hiệu năng cao cho Terminal, được thiết kế đồng bộ trải nghiệm TUI hiện đại (kế thừa các chuẩn UX tiên tiến từ `caudata`).
 
 Ứng dụng kết hợp đầy đủ các tính năng quản lý CSDL trực quan (PostgreSQL, MySQL, SQLite, SSH Tunneling, Schema Tree, Multi-Tab SQL Editor, Dual-Mode Data Grid, và Cell Detail Inspector) với tốc độ rendering mượt mà **60 FPS** và mức tiêu thụ RAM siêu nhẹ (**~25MB - 50MB**) nhờ sức mạnh của Elixir OTP và Rust Ratatui NIF engine.
 
@@ -13,7 +13,7 @@
 ## ✨ Features (Tính năng nổi bật)
 
 - 🔌 **Multi-Driver Database Support**: Hỗ trợ kết nối trực tiếp **PostgreSQL** (`Postgrex`), **MySQL/MariaDB** (`MyXQL`), và **SQLite** (`Exqlite`).
-- ⚡ **Zero-Latency ETS Binary Config Storage**: Đồng bộ cơ cấu lưu trữ file ETS nhị phân (`:ets.tab2file` / `:ets.file2tab`) tại `~/.db_data/config.db` (kèm fallback JSON), đảm bảo nạp dữ liệu tức thì không độ trễ.
+- ⚡ **Zero-Latency ETS Binary Config Storage**: Đồng bộ cơ cấu lưu trữ file ETS nhị phân (`:ets.tab2file` / `:ets.file2tab`) tại `~/.strata/config.db` (kèm fallback JSON), đảm bảo nạp dữ liệu tức thì không độ trễ.
 - 🗂️ **Browsing vs Select Modes DataGrid**:
   - 📜 **Browsing Mode (Mặc định)**: Hiển thị văn bản sạch sẽ không bị viền con trỏ đè chữ. Cuộn dữ liệu tức thì từ đỉnh (Top-first) bằng phím mũi tên hoặc con lăn chuột mà không gây lệch/giật màn hình.
   - 🎯 **Select Mode**: Bật bằng phím `v`, `s`, `Enter`, `Space` hoặc nhấp chuột. Hiển thị viền con trỏ nổi bật nền vàng/xanh, hỗ trợ di chuyển từng ô, sao chép dữ liệu (`c`/`y`) và soi chi tiết.
@@ -35,16 +35,16 @@
 
 ```mermaid
 graph TD
-    App[DBData.Application] --> ConfigStore[DBData.ConfigStore - ETS Binary Storage ~/.db_data/config.db]
-    App --> SSHProfileStore[DBData.SSHProfileStore - ETS SSH Profiles]
-    App --> ConnectionSup[DBData.ConnectionSupervisor - DynamicSupervisor]
-    App --> DataStore[DBData.DataStore - ETS Data Grid Cache]
-    App --> Formatter[DBData.Formatter - Cell Sanitizer & Hex/UUID Decoder]
-    App --> UIRenderer[DBData.UI.Renderer - ExRatatui Engine]
+    App[Strata.Application] --> ConfigStore[Strata.ConfigStore - ETS Binary Storage ~/.strata/config.db]
+    App --> SSHProfileStore[Strata.SSHProfileStore - ETS SSH Profiles]
+    App --> ConnectionSup[Strata.ConnectionSupervisor - DynamicSupervisor]
+    App --> DataStore[Strata.DataStore - ETS Data Grid Cache]
+    App --> Formatter[Strata.Formatter - Cell Sanitizer & Hex/UUID Decoder]
+    App --> UIRenderer[Strata.UI.Renderer - ExRatatui Engine]
 
-    ConnectionSup --> Worker1[DBData.ConnectionWorker - Postgres GenServer]
-    ConnectionSup --> Worker2[DBData.ConnectionWorker - MySQL GenServer]
-    ConnectionSup --> Worker3[DBData.ConnectionWorker - SQLite GenServer]
+    ConnectionSup --> Worker1[Strata.ConnectionWorker - Postgres GenServer]
+    ConnectionSup --> Worker2[Strata.ConnectionWorker - MySQL GenServer]
+    ConnectionSup --> Worker3[Strata.ConnectionWorker - SQLite GenServer]
 
     Worker1 --> SSHTunnel[Erlang :ssh Tunnel Port Forwarding]
     Worker1 --> Driver[Postgrex / MyXQL / Exqlite]
@@ -60,7 +60,7 @@ Yêu cầu hệ thống: **Elixir 1.15+** và **Erlang OTP 26+**.
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/quaywin/dbdata.git
+git clone https://github.com/quaywin/strata.git
 cd strata
 
 # 2. Cài đặt các thư viện phụ thuộc
@@ -70,7 +70,7 @@ mix deps.get
 mix compile
 
 # 4. Chạy ứng dụng TUI
-mix db_data
+mix strata
 ```
 
 ### Chạy Test Suite
@@ -88,9 +88,9 @@ MIX_ENV=prod mix release
 ```
 
 File executable sản phẩm sẽ nằm tại thư mục `burrito_out/`:
-- macOS (Apple Silicon): `burrito_out/dbdata_macos_aarch64`
-- macOS (Intel): `burrito_out/dbdata_macos_x86_64`
-- Linux (x86_64): `burrito_out/dbdata_linux_x86_64`
+- macOS (Apple Silicon): `burrito_out/strata_macos_aarch64`
+- macOS (Intel): `burrito_out/strata_macos_x86_64`
+- Linux (x86_64): `burrito_out/strata_linux_x86_64`
 
 ---
 
@@ -117,13 +117,13 @@ File executable sản phẩm sẽ nằm tại thư mục `burrito_out/`:
 
 ## 📁 Storage & Configuration Layout
 
-`dbdata` tự động lưu trữ cấu hình nhị phân theo chuẩn Erlang ETS tại thư mục người dùng:
+`strata` tự động lưu trữ cấu hình nhị phân theo chuẩn Erlang ETS tại thư mục người dùng:
 
 ```text
-~/.db_data/
+~/.strata/
 └── config.db          # File binary ETS lưu danh sách Profiles & SSH Configurations
 
-~/.config/dbdata/
+~/.config/strata/
 └── profiles.json       # File JSON dự phòng (Dual Fallback Config)
 ```
 

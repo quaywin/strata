@@ -1,9 +1,9 @@
-defmodule DBData.MixProject do
+defmodule Strata.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :db_data,
+      app: :strata,
       version: "0.1.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
@@ -16,13 +16,13 @@ defmodule DBData.MixProject do
   def application do
     [
       extra_applications: [:logger, :ssh, :postgrex, :myxql, :exqlite],
-      mod: {DBData.Application, []}
+      mod: {Strata.Application, []}
     ]
   end
 
   def releases do
     [
-      dbdata: [
+      strata: [
         steps: [:assemble, &Burrito.wrap/1],
         burrito: [
           targets: [

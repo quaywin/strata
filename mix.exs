@@ -40,7 +40,9 @@ defmodule DBData.MixProject do
       {:myxql, ">= 0.0.0"},
       {:exqlite, "~> 0.13"},
       {:jason, "~> 1.4"},
+      {:ex_ratatui, git: "https://github.com/quaywin/ex_ratatui.git", branch: "main", override: true},
       {:burrito, "~> 1.0", runtime: false}
     ]
   end
 end
+

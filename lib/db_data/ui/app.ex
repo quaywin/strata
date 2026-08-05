@@ -2,7 +2,9 @@ defmodule DBData.UI.App do
   @moduledoc """
   State management for Database TUI interface.
   Manages focus panes, tabbed SQL editor, modal overlays stack, and tree view navigation.
+  Integrated with ExRatatui.App behaviour for 60 FPS event-driven TUI.
   """
+  use ExRatatui.App
 
   alias DBData.UI.Components.DataGrid
   alias DBData.UI.Components.LogPane
@@ -48,6 +50,93 @@ defmodule DBData.UI.App do
   ]
 
   @panes [:sidebar, :editor, :datagrid, :log]
+
+  # --- ExRatatui.App Callbacks ---
+
+  @impl true
+  def mount(opts) do
+    {w, h} =
+      if Keyword.get(opts, :terminal, false) do
+        case ExRatatui.terminal_size() do
+          {w, h} -> {w, h}
+          _ -> {120, 40}
+        end
+      else
+        {120, 40}
+      end
+
+    state = new(window_size: {w, h})
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_event(%ExRatatui.Event.Resize{width: w, height: h}, state) do
+    {:noreply, %{state | window_size: {w, h}}}
+  end
+
+  def handle_event(%ExRatatui.Event.Key{code: code, modifiers: modifiers}, state) do
+    mapped_key = map_ex_ratatui_key(code, modifiers)
+
+    cond do
+      mapped_key == :quit and state.focus != :editor and Enum.empty?(state.modals) ->
+        {:stop, state}
+
+      true ->
+        new_state = handle_key(state, mapped_key)
+        {:noreply, new_state}
+    end
+  end
+
+  def handle_event(%ExRatatui.Event.Mouse{} = mouse, state) do
+    col = Map.get(mouse, :column) || Map.get(mouse, :x) || 0
+    row = Map.get(mouse, :row) || Map.get(mouse, :y) || 0
+    kind = Map.get(mouse, :kind, :down)
+
+    event =
+      case kind do
+        :down -> {:click, col, row}
+        _ -> {:mouse_event, kind, col, row}
+      end
+
+    new_state = handle_mouse(state, event)
+    {:noreply, new_state}
+  end
+
+  def handle_event(_event, state), do: {:noreply, state}
+
+  @impl true
+  def render(state, _frame \\ nil) do
+    Renderer.render(state)
+  end
+
+
+  defp map_ex_ratatui_key(code, modifiers) do
+    ctrl? = "control" in modifiers or "Ctrl" in modifiers or "ctrl" in modifiers
+
+    cond do
+      ctrl? and is_binary(code) and String.length(code) == 1 ->
+        {:ctrl, code}
+
+      code in ["up", "Up"] -> :up
+      code in ["down", "Down"] -> :down
+      code in ["left", "Left"] -> :left
+      code in ["right", "Right"] -> :right
+      code in ["tab", "Tab"] -> :tab
+      code in ["enter", "Enter"] -> :enter
+      code in ["esc", "escape", "Esc", "Escape"] -> :esc
+      code in ["backspace", "Backspace"] -> :backspace
+      code in ["f1", "F1"] -> :f1
+      code in ["f2", "F2"] -> :f2
+      code in ["f3", "F3"] -> :f3
+      code in ["f5", "F5"] -> :f5
+      code in ["f6", "F6"] -> :f6
+      code in ["q", "Q"] -> :quit
+      is_binary(code) and String.length(code) == 1 -> code
+      true -> :unknown
+    end
+  end
+
+  # --- Domain State Logic ---
 
   @doc """
   Creates a new App state with default or custom options.

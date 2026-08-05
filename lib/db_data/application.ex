@@ -6,6 +6,8 @@ defmodule DBData.Application do
     children = [
       DBData.SSHProfileStore,
       DBData.ConfigStore,
+      DBData.DataStore,
+      DBData.LogStore,
       {DynamicSupervisor, name: DBData.ConnectionSupervisor, strategy: :one_for_one}
     ]
 

@@ -4,7 +4,10 @@ defmodule DBData.UI.App do
   Manages focus panes, tabbed SQL editor, modal overlays stack, and tree view navigation.
   """
 
+  alias DBData.UI.Components.DataGrid
+  alias DBData.UI.Components.LogPane
   alias DBData.UI.Components.Sidebar
+  alias DBData.UI.Components.SQLEditor
   alias DBData.UI.Renderer
 
   @type focus_pane :: :sidebar | :editor | :datagrid | :log
@@ -23,6 +26,8 @@ defmodule DBData.UI.App do
           modals: [map()],
           sidebar_nodes: [map()],
           selected_tree_node_id: String.t() | nil,
+          datagrid_state: DataGrid.t() | nil,
+          log_state: LogPane.t() | nil,
           mouse_enabled: boolean(),
           window_size: {pos_integer(), pos_integer()},
           status_message: String.t()
@@ -35,6 +40,8 @@ defmodule DBData.UI.App do
     modals: [],
     sidebar_nodes: [],
     selected_tree_node_id: nil,
+    datagrid_state: nil,
+    log_state: nil,
     mouse_enabled: true,
     window_size: {120, 40},
     status_message: "Ready"
@@ -182,6 +189,22 @@ defmodule DBData.UI.App do
 
   def handle_key(%__MODULE__{focus: :sidebar} = app, key) do
     Sidebar.handle_key(app, key)
+  end
+
+  def handle_key(%__MODULE__{focus: :editor} = app, key) do
+    SQLEditor.handle_key(app, key)
+  end
+
+  def handle_key(%__MODULE__{focus: :datagrid} = app, key) do
+    grid = app.datagrid_state || DataGrid.new()
+    {app, updated_grid} = DataGrid.handle_key(app, grid, key)
+    %{app | datagrid_state: updated_grid}
+  end
+
+  def handle_key(%__MODULE__{focus: :log} = app, key) do
+    log_state = app.log_state || LogPane.new()
+    {app, updated_log_state} = LogPane.handle_key(app, log_state, key)
+    %{app | log_state: updated_log_state}
   end
 
   def handle_key(%__MODULE__{} = app, _key), do: app

@@ -4,8 +4,11 @@ defmodule DBData.UI.Renderer do
   Partitions terminal window into grid chunks and dispatches rendering for panes and modals.
   """
 
+  alias DBData.UI.Components.DataGrid
   alias DBData.UI.Components.Footer
+  alias DBData.UI.Components.LogPane
   alias DBData.UI.Components.Sidebar
+  alias DBData.UI.Components.SQLEditor
 
   @type rect :: %{x: non_neg_integer(), y: non_neg_integer(), width: pos_integer(), height: pos_integer()}
 
@@ -84,21 +87,9 @@ defmodule DBData.UI.Renderer do
       active_tab_id: app.active_tab_id
     }
 
-    editor_chunk = %{
-      title: "SQL EDITOR",
-      area: areas.editor,
-      active_tab: Enum.find(app.tabs, &(&1.id == app.active_tab_id))
-    }
-
-    datagrid_chunk = %{
-      title: "RESULT DATA GRID",
-      area: areas.datagrid
-    }
-
-    log_chunk = %{
-      title: "QUERY LOGS & CONSOLE STATS",
-      area: areas.log
-    }
+    editor_chunk = SQLEditor.render(app, areas.editor)
+    datagrid_chunk = DataGrid.render(app, areas.datagrid, app.datagrid_state || DataGrid.new())
+    log_chunk = LogPane.render(app, areas.log, app.log_state || LogPane.new())
 
     modal_chunk =
       case app.modals do

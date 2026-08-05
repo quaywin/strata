@@ -1,11 +1,11 @@
-# dbdata 🗄️
+# dbdata 🗄️ — Database TUI Manager
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Elixir](https://img.shields.io/badge/Elixir-1.15%2B-purple.svg)](https://elixir-lang.org/)
 
-`dbdata` là ứng dụng **Database TUI Manager** (Terminal User Interface) hiệu năng cao cho Terminal, được phát triển trên nền tảng kiến trúc của [Caudata](file:///Users/quaywin/Projects_1/caudata). 
+`dbdata` là ứng dụng **Database TUI Manager** (Terminal User Interface) độc lập, hiệu năng cao cho Terminal. 
 
-Ứng dụng kết hợp đầy đủ các tính năng cốt lõi của **DBeaver** (Quản lý kết nối DB, SSH Tunneling, Schema Navigation Tree, SQL Editor đa tab, Paginated Data Grid, và Lịch sử Query Log) với tốc độ rendering mượt mà **60 FPS** và mức tiêu thụ RAM cực nhẹ (**~25MB - 50MB**) nhờ sức mạnh của Elixir OTP và Rust Ratatui NIF engine.
+Ứng dụng kết hợp đầy đủ các tính năng quản lý Database trực quan (Quản lý kết nối DB, SSH Tunneling, Schema Navigation Tree, SQL Editor đa tab, Paginated Data Grid, và Lịch sử Query Log) với tốc độ rendering mượt mà **60 FPS** và mức tiêu thụ RAM cực nhẹ (**~25MB - 50MB**) nhờ sức mạnh của Elixir OTP và Rust Ratatui NIF engine.
 
 ---
 
@@ -59,7 +59,7 @@ cd dbdata
 mix deps.get
 
 # 3. Chạy ứng dụng TUI
-mix run --no-halt
+mix db_data
 ```
 
 ### Chạy Test Suite
@@ -104,7 +104,7 @@ File executable sản phẩm sẽ nằm tại thư mục `burrito_out/`:
 
 ## 📁 Directory & Configuration Layout
 
-`dbdata` tự động lưu trữ và quản lý cấu hình tại thư mục người dùng `~/.config/dbdata/`:
+`dbdata` tự động lưu trữ và quản lý cấu hình độc lập tại thư mục người dùng `~/.config/dbdata/`:
 
 ```text
 ~/.config/dbdata/

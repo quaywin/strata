@@ -114,10 +114,34 @@ defmodule Strata.ConfigStore do
           :ets.delete(file_tab)
 
         {:error, _} ->
+          load_caudata_fallback(tab)
           load_json_fallback(tab)
       end
     else
+      load_caudata_fallback(tab)
       load_json_fallback(tab)
+    end
+  end
+
+  defp load_caudata_fallback(tab) do
+    caudata_path = Path.expand("~/.caudata/config.db")
+
+    if File.exists?(caudata_path) do
+      case :ets.file2tab(String.to_charlist(caudata_path)) do
+        {:ok, file_tab} ->
+          :ets.foldl(
+            fn element, _acc ->
+              :ets.insert(tab, element)
+            end,
+            :ok,
+            file_tab
+          )
+
+          :ets.delete(file_tab)
+
+        {:error, _} ->
+          :ok
+      end
     end
   end
 

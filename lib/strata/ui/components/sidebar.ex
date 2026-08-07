@@ -125,17 +125,33 @@ defmodule Strata.UI.Components.Sidebar do
     case key do
       :down ->
         next_node = get_neighbor(visible, sel_id, 1)
-        if next_node, do: %{app | selected_tree_node_id: next_node.id}, else: app
+        if next_node do
+          new_idx = Enum.find_index(visible, &(&1.id == next_node.id)) || 0
+          viewport_h = sidebar_viewport_h(app)
+          offset = Map.get(app, :sidebar_scroll_offset, 0)
+          new_offset = ensure_visible(offset, new_idx, viewport_h, length(visible))
+          %{app | selected_tree_node_id: next_node.id, sidebar_scroll_offset: new_offset}
+        else
+          app
+        end
 
       :up ->
         prev_node = get_neighbor(visible, sel_id, -1)
-        if prev_node, do: %{app | selected_tree_node_id: prev_node.id}, else: app
+        if prev_node do
+          new_idx = Enum.find_index(visible, &(&1.id == prev_node.id)) || 0
+          viewport_h = sidebar_viewport_h(app)
+          offset = Map.get(app, :sidebar_scroll_offset, 0)
+          new_offset = ensure_visible(offset, new_idx, viewport_h, length(visible))
+          %{app | selected_tree_node_id: prev_node.id, sidebar_scroll_offset: new_offset}
+        else
+          app
+        end
 
       :right ->
         selected_item = Enum.find(visible, &(&1.id == sel_id))
 
         cond do
-          selected_item && selected_item.has_children? and not selected_item.expanded? ->
+          selected_item && selected_item.has_children? == true and selected_item.expanded? != true ->
             update_node_expanded(app, sel_id, true)
 
           true ->
@@ -145,13 +161,34 @@ defmodule Strata.UI.Components.Sidebar do
       :left ->
         selected_item = Enum.find(visible, &(&1.id == sel_id))
 
-        if selected_item && selected_item.expanded? do
-          update_node_expanded(app, sel_id, false)
-        else
-          app
+        cond do
+          selected_item && selected_item.expanded? and selected_item.has_children? ->
+            update_node_expanded(app, sel_id, false)
+
+          selected_item && selected_item.depth > 0 ->
+            sel_idx = Enum.find_index(visible, &(&1.id == sel_id)) || 0
+
+            parent_node =
+              visible
+              |> Enum.take(sel_idx)
+              |> Enum.reverse()
+              |> Enum.find(fn n -> n.depth < selected_item.depth end)
+
+            if parent_node do
+              new_idx = Enum.find_index(visible, &(&1.id == parent_node.id)) || 0
+              viewport_h = sidebar_viewport_h(app)
+              offset = Map.get(app, :sidebar_scroll_offset, 0)
+              new_offset = ensure_visible(offset, new_idx, viewport_h, length(visible))
+              %{app | selected_tree_node_id: parent_node.id, sidebar_scroll_offset: new_offset}
+            else
+              app
+            end
+
+          true ->
+            app
         end
 
-      k when k in [:enter, "r", "R"] ->
+      k when k in [:enter, :space, " ", "r", "R"] ->
         selected_item = Enum.find(visible, &(&1.id == sel_id))
 
         if selected_item && selected_item.type in [:table, :view] do
@@ -160,10 +197,13 @@ defmodule Strata.UI.Components.Sidebar do
           toggle_node_expanded(app, sel_id)
         end
 
-      k when k in ["a", "A", {:ctrl, "a"}] ->
-        Strata.UI.App.push_modal(app, Strata.UI.Components.ConnectionModal.new())
+      k when k in ["c", "C"] ->
+        collapse_all_nodes(app)
 
-      k when k in ["e", "E", {:ctrl, "e"}] ->
+      k when k in ["o", "O", "x", "X"] ->
+        expand_all_nodes(app)
+
+      k when k in ["a", "A", {:ctrl, "a"}] ->
         Strata.UI.App.push_modal(app, Strata.UI.Components.ConnectionModal.new())
 
       _other ->
@@ -189,21 +229,22 @@ defmodule Strata.UI.Components.Sidebar do
       Enum.find(profiles, fn p -> sel_id && String.starts_with?(sel_id, p.id) end) ||
         List.first(profiles)
 
-    {columns, rows, status_msg} =
+    {columns, rows, status_msg, has_more} =
       if profile do
-        case fetch_real_table_data(profile, table_name) do
+        case fetch_table_chunk(profile, table_name, 0, 100) do
           {:ok, cols, data_rows} ->
-            {cols, data_rows, "Loaded table '#{table_name}' (#{length(data_rows)} rows)"}
+            has_more = length(data_rows) == 100
+            {cols, data_rows, "Loaded table '#{table_name}' (#{length(data_rows)} rows)", has_more}
 
           {:error, reason} ->
             msg = if is_binary(reason), do: reason, else: inspect(reason)
-            {["error"], [[msg]], "Error loading table '#{table_name}': #{msg}"}
+            {["error"], [[msg]], "Error loading table '#{table_name}': #{msg}", false}
         end
       else
-        {["info"], [["No database connection configured"]], "No database connection configured"}
+        {["info"], [["No database connection configured"]], "No database connection configured", false}
       end
 
-    grid = Strata.UI.Components.DataGrid.new(columns, rows)
+    grid = Strata.UI.Components.DataGrid.new(columns, rows, batch_size: 100, has_more: has_more, loading_more: false)
 
     app
     |> Strata.UI.App.switch_view(:table_view)
@@ -212,15 +253,19 @@ defmodule Strata.UI.Components.Sidebar do
     |> Map.put(:status_message, status_msg)
   end
 
-  defp fetch_real_table_data(profile, table_name) do
+  @doc """
+  Fetches a chunk of rows from `table_name` starting at `offset` with limit `limit`.
+  Returns `{:ok, columns, rows}` or `{:error, reason}`.
+  """
+  def fetch_table_chunk(profile, table_name, offset, limit \\ 100) do
     case Strata.ConnectionWorker.start_link(profile) do
       {:ok, pid} ->
         try do
           sql =
             case profile.driver do
-              :sqlite -> "SELECT * FROM \"#{table_name}\" LIMIT 100;"
-              :mysql -> "SELECT * FROM `#{table_name}` LIMIT 100;"
-              _ -> "SELECT * FROM \"#{table_name}\" LIMIT 100;"
+              :sqlite -> "SELECT * FROM \"#{table_name}\" LIMIT #{limit} OFFSET #{offset};"
+              :mysql -> "SELECT * FROM `#{table_name}` LIMIT #{limit} OFFSET #{offset};"
+              _ -> "SELECT * FROM \"#{table_name}\" LIMIT #{limit} OFFSET #{offset};"
             end
 
           case Strata.ConnectionWorker.execute_query(pid, sql) do
@@ -251,8 +296,36 @@ defmodule Strata.UI.Components.Sidebar do
   end
 
   @doc """
+  Collapses all expandable tree nodes in sidebar.
+  """
+  def collapse_all_nodes(%{sidebar_nodes: nodes} = app) do
+    updated = map_all_nodes(nodes, fn n -> Map.put(n, :expanded?, false) end)
+    %{app | sidebar_nodes: updated, sidebar_scroll_offset: 0}
+  end
+
+  @doc """
+  Expands/explores all expandable tree nodes in sidebar.
+  """
+  def expand_all_nodes(%{sidebar_nodes: nodes} = app) do
+    updated = map_all_nodes(nodes, fn n -> Map.put(n, :expanded?, true) end)
+    %{app | sidebar_nodes: updated}
+  end
+
+  defp map_all_nodes(nodes, func) do
+    Enum.map(nodes, fn node ->
+      node = func.(node)
+      children = Map.get(node, :children, [])
+
+      if children != [] do
+        Map.put(node, :children, map_all_nodes(children, func))
+      else
+        node
+      end
+    end)
+  end
+
+  @doc """
   Renders tree view state into structured render map for the sidebar area.
-  Returns items, selected_index, and lines for ExRatatui.Widgets.List widget rendering.
   """
   def render(app, area) do
     visible = flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
@@ -265,24 +338,11 @@ defmodule Strata.UI.Components.Sidebar do
         "#{indent}#{icon} #{item.label}"
       end)
 
-    lines =
-      Enum.map(visible, fn item ->
-        indent = String.duplicate("  ", item.depth)
-        icon = type_icon(item.type, item.expanded?, item.has_children?)
-        prefix = if item.selected?, do: "> ", else: "  "
-
-        %{
-          text: "#{prefix}#{indent}#{icon} #{item.label}",
-          selected?: item.selected?,
-          type: item.type
-        }
-      end)
-
     %{
       title: "CONNECTIONS / SCHEMA",
       area: area,
       items: items,
-      lines: lines,
+      lines: items,
       selected_index: selected_idx,
       selected_id: app.selected_tree_node_id
     }
@@ -349,4 +409,24 @@ defmodule Strata.UI.Components.Sidebar do
   defp type_icon(_other, true, true), do: "▼"
   defp type_icon(_other, false, true), do: "▶"
   defp type_icon(_other, _exp?, false), do: "•"
+
+  defp sidebar_viewport_h(app) do
+    {_w, h} = Map.get(app, :window_size, {120, 40})
+    footer_height = 1
+    content_height = max(1, h - footer_height)
+    # sidebar viewport = content_height - 2 (top + bottom borders)
+    max(1, content_height - 2)
+  end
+
+  defp ensure_visible(current_offset, selected_idx, viewport_h, total) do
+    max_offset = max(0, total - viewport_h)
+    cond do
+      selected_idx < current_offset ->
+        max(0, selected_idx)
+      selected_idx >= current_offset + viewport_h ->
+        min(selected_idx - viewport_h + 1, max_offset)
+      true ->
+        min(current_offset, max_offset)
+    end
+  end
 end

@@ -5,6 +5,9 @@ defmodule Strata.Formatter do
   and rich full-content inspection in detail modals.
   """
 
+  alias ExRatatui.Style
+  alias ExRatatui.Text.Span
+
   @doc """
   Sanitizes any cell value into a safe single-line string for TUI grid display.
   Automatically converts 16-byte raw binaries to UUID strings.
@@ -17,10 +20,14 @@ defmodule Strata.Formatter do
 
   def sanitize_cell(val) when is_binary(val) do
     if String.printable?(val) do
-      val
-      |> String.replace("\r\n", " ↵ ")
-      |> String.replace("\n", " ↵ ")
-      |> String.replace("\r", " ↵ ")
+      if String.contains?(val, ["\r", "\n"]) do
+        val
+        |> String.replace("\r\n", " ↵ ")
+        |> String.replace("\n", " ↵ ")
+        |> String.replace("\r", " ↵ ")
+      else
+        val
+      end
     else
       "<binary: #{byte_size(val)} bytes>"
     end
@@ -29,16 +36,30 @@ defmodule Strata.Formatter do
   def sanitize_cell(val) when is_map(val) or is_list(val) or is_tuple(val) do
     case Jason.encode(val) do
       {:ok, json} ->
-        json |> String.replace("\r\n", " ") |> String.replace("\n", " ")
+        if String.contains?(json, ["\r", "\n"]) do
+          json |> String.replace("\r\n", " ") |> String.replace("\n", " ")
+        else
+          json
+        end
 
       _ ->
-        inspect(val) |> String.replace("\r\n", " ") |> String.replace("\n", " ")
+        str = inspect(val)
+        if String.contains?(str, ["\r", "\n"]), do: String.replace(str, ~r/\r?\n/, " "), else: str
     end
   end
 
   def sanitize_cell(val) do
-    to_string(val) |> String.replace("\r\n", " ") |> String.replace("\n", " ")
+    to_string(val)
   end
+
+  @doc """
+  Formats a cell value into a clean ExRatatui.Text.Span struct with plain text styling.
+  """
+  def format_cell_span(val, _col_w \\ nil) do
+    %Span{content: sanitize_cell(val), style: %Style{fg: :white}}
+  end
+
+
 
   @doc """
   Formats full cell value for detail inspection modal with pretty JSON formatting or Hex Dump for binary data.
@@ -74,15 +95,13 @@ defmodule Strata.Formatter do
 
   @doc """
   Converts a 16-byte raw binary into canonical UUID string format (8-4-4-4-12).
+  Uses Erlang C NIF Base.encode16 for maximum speed.
   """
-  def format_uuid(<<a::32, b::16, c::16, d::16, e::48>>) do
-    a_str = Integer.to_string(a, 16) |> String.downcase() |> String.pad_leading(8, "0")
-    b_str = Integer.to_string(b, 16) |> String.downcase() |> String.pad_leading(4, "0")
-    c_str = Integer.to_string(c, 16) |> String.downcase() |> String.pad_leading(4, "0")
-    d_str = Integer.to_string(d, 16) |> String.downcase() |> String.pad_leading(4, "0")
-    e_str = Integer.to_string(e, 16) |> String.downcase() |> String.pad_leading(12, "0")
+  def format_uuid(<<_::128>> = uuid_bin) do
+    <<a::binary-size(8), b::binary-size(4), c::binary-size(4), d::binary-size(4), e::binary-size(12)>> =
+      Base.encode16(uuid_bin, case: :lower)
 
-    "#{a_str}-#{b_str}-#{c_str}-#{d_str}-#{e_str}"
+    "#{a}-#{b}-#{c}-#{d}-#{e}"
   end
 
   defp format_hex_dump(binary) do

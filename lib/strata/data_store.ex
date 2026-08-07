@@ -21,8 +21,9 @@ defmodule Strata.DataStore do
   """
   @spec put_result_set(String.t(), [String.t()], [list()], integer() | nil) :: :ok
   def put_result_set(tab_id, columns, rows, total_rows \\ nil) when is_binary(tab_id) do
-    total = total_rows || length(rows)
-    true = :ets.insert(@table_name, {tab_id, columns, rows, total})
+    loaded = length(rows)
+    total = total_rows || loaded
+    true = :ets.insert(@table_name, {tab_id, columns, rows, loaded, total})
     :ok
   end
 
@@ -42,10 +43,9 @@ defmodule Strata.DataStore do
   @spec get_page(String.t(), integer(), integer()) :: {[String.t()], [list()], integer(), integer()}
   def get_page(tab_id, page, page_size) when is_binary(tab_id) and page >= 1 and page_size >= 1 do
     case :ets.lookup(@table_name, tab_id) do
-      [{^tab_id, columns, rows, total_rows}] ->
+      [{^tab_id, columns, rows, loaded_count, total_rows}] ->
         offset = (page - 1) * page_size
         sliced_rows = Enum.slice(rows, offset, page_size)
-        loaded_count = length(rows)
         {columns, sliced_rows, loaded_count, total_rows}
 
       [] ->
@@ -60,7 +60,7 @@ defmodule Strata.DataStore do
   @spec get_rows(String.t()) :: {[String.t()], [list()]} | nil
   def get_rows(tab_id) when is_binary(tab_id) do
     case :ets.lookup(@table_name, tab_id) do
-      [{^tab_id, columns, rows, _total_rows}] -> {columns, rows}
+      [{^tab_id, columns, rows, _loaded, _total}] -> {columns, rows}
       [] -> nil
     end
   end

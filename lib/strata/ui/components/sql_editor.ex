@@ -290,6 +290,8 @@ defmodule Strata.UI.Components.SQLEditor do
     end
   end
 
+  alias Strata.UI.Components.SQLCompleter
+
   @doc """
   Handles keypress events for active SQL editor tab.
   """
@@ -297,40 +299,99 @@ defmodule Strata.UI.Components.SQLEditor do
     active_tab = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
 
     if active_tab do
-      {new_content, new_cursor} =
-        case key do
-          {:char, char} ->
-            insert_text(active_tab.content, active_tab.cursor, char)
+      comp = Map.get(active_tab, :completion, %{active?: false, suggestions: [], selected_index: 0, prefix: ""})
 
-          :enter ->
-            insert_text(active_tab.content, active_tab.cursor, "\n")
+      cond do
+        comp.active? and key == :down ->
+          cnt = max(1, length(comp.suggestions))
+          new_idx = rem(comp.selected_index + 1, cnt)
+          update_active_tab_completion(app, active_tab, %{comp | selected_index: new_idx})
 
-          :backspace ->
-            backspace(active_tab.content, active_tab.cursor)
+        comp.active? and key == :up ->
+          cnt = max(1, length(comp.suggestions))
+          new_idx = rem(comp.selected_index - 1 + cnt, cnt)
+          update_active_tab_completion(app, active_tab, %{comp | selected_index: new_idx})
 
-          :delete ->
-            delete_char(active_tab.content, active_tab.cursor)
+        comp.active? and key in [:enter, :tab] ->
+          sug = Enum.at(comp.suggestions, comp.selected_index)
 
-          nav when nav in [:left, :right, :up, :down, :home, :end, :page_up, :page_down] ->
-            {active_tab.content, move_cursor(active_tab.content, active_tab.cursor, nav)}
+          if sug do
+            {new_content, new_cursor} = SQLCompleter.apply_completion(active_tab.content, active_tab.cursor, sug, comp.prefix)
+            new_comp = %{active?: false, suggestions: [], selected_index: 0, prefix: ""}
 
-          _other ->
-            {active_tab.content, active_tab.cursor}
-        end
-
-      updated_tabs =
-        Enum.map(app.tabs, fn t ->
-          if t.id == active_tab.id do
-            %{t | content: new_content, cursor: new_cursor}
+            updated_tab = %{active_tab | content: new_content, cursor: new_cursor} |> Map.put(:completion, new_comp)
+            update_active_tab(app, updated_tab)
           else
-            t
+            update_active_tab_completion(app, active_tab, %{comp | active?: false})
           end
-        end)
 
-      %{app | tabs: updated_tabs}
+        comp.active? and key == :esc ->
+          update_active_tab_completion(app, active_tab, %{comp | active?: false})
+
+        true ->
+          {new_content, new_cursor} =
+            case key do
+              char when is_binary(char) -> insert_text(active_tab.content, active_tab.cursor, char)
+              {:char, char} -> insert_text(active_tab.content, active_tab.cursor, char)
+              :tab -> insert_text(active_tab.content, active_tab.cursor, "  ")
+              :enter -> insert_text(active_tab.content, active_tab.cursor, "\n")
+              :backspace -> backspace(active_tab.content, active_tab.cursor)
+              :delete -> delete_char(active_tab.content, active_tab.cursor)
+              nav when nav in [:left, :right, :up, :down, :home, :end, :page_up, :page_down] ->
+                {active_tab.content, move_cursor(active_tab.content, active_tab.cursor, nav)}
+              _other ->
+                {active_tab.content, active_tab.cursor}
+            end
+
+          {prefix, _start_c} = SQLCompleter.extract_prefix(new_content, new_cursor)
+          suggs = SQLCompleter.suggestions(prefix, sidebar_nodes: app.sidebar_nodes)
+
+          new_comp =
+            if suggs != [] and String.length(prefix) >= 1 and key not in [:enter, :esc] do
+              %{active?: true, suggestions: suggs, selected_index: 0, prefix: prefix}
+            else
+              %{active?: false, suggestions: [], selected_index: 0, prefix: ""}
+            end
+
+          updated_tab = %{active_tab | content: new_content, cursor: new_cursor} |> Map.put(:completion, new_comp)
+          update_active_tab(app, updated_tab)
+      end
     else
       app
     end
+  end
+
+  defp update_active_tab(app, updated_tab) do
+    updated_tabs =
+      Enum.map(app.tabs, fn t ->
+        if t.id == updated_tab.id, do: updated_tab, else: t
+      end)
+
+    %{app | tabs: updated_tabs}
+  end
+
+  defp update_active_tab_completion(app, active_tab, new_comp) do
+    updated_tab = Map.put(active_tab, :completion, new_comp)
+    update_active_tab(app, updated_tab)
+  end
+
+  @doc """
+  Returns list of formatted tab titles for ExRatatui.Widgets.Tabs.
+  """
+  @spec tab_titles(map()) :: [String.t()]
+  def tab_titles(app) do
+    Enum.map(Enum.with_index(app.tabs), fn {t, idx} ->
+      star = if t.id == app.active_tab_id, do: "★ ", else: ""
+      "#{star}#{idx + 1}: #{t.name}"
+    end)
+  end
+
+  @doc """
+  Returns 0-based index of active tab.
+  """
+  @spec active_tab_index(map()) :: non_neg_integer()
+  def active_tab_index(app) do
+    Enum.find_index(app.tabs, &(&1.id == app.active_tab_id)) || 0
   end
 
   @doc """
@@ -340,6 +401,10 @@ defmodule Strata.UI.Components.SQLEditor do
     active_tab = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
     content = if active_tab, do: active_tab.content, else: ""
     cursor = if active_tab, do: active_tab.cursor, else: {0, 0}
+    active_idx = active_tab_index(app)
+    titles = tab_titles(app)
+
+    comp = Map.get(active_tab || %{}, :completion, %{active?: false, suggestions: [], selected_index: 0, prefix: ""})
 
     lines =
       content
@@ -363,8 +428,11 @@ defmodule Strata.UI.Components.SQLEditor do
       title: "SQL EDITOR",
       area: area,
       active_tab: active_tab,
+      active_index: active_idx,
+      tab_titles: titles,
       lines: lines,
-      cursor: cursor
+      cursor: cursor,
+      completion: comp
     }
   end
 end

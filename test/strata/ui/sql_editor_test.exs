@@ -113,7 +113,7 @@ defmodule Strata.UI.Components.SQLEditorTest do
       assert String.contains?(active.content, "A")
     end
 
-    test "render returns structured view map" do
+    test "render returns structured view map with tab titles" do
       app = App.new(focus: :editor)
       area = %{x: 0, y: 0, width: 80, height: 20}
       rendered = SQLEditor.render(app, area)
@@ -122,6 +122,48 @@ defmodule Strata.UI.Components.SQLEditorTest do
       assert rendered.area == area
       assert is_list(rendered.lines)
       assert rendered.active_tab != nil
+      assert is_list(rendered.tab_titles)
+      assert rendered.active_index == 0
+    end
+
+    test "tab_titles and active_tab_index calculate tab metadata correctly" do
+      app = App.new(focus: :editor)
+      app = App.open_tab(app, name: "Query 2")
+
+      titles = SQLEditor.tab_titles(app)
+      assert length(titles) == 2
+      assert Enum.at(titles, 1) =~ "★ 2: Query 2"
+
+      assert SQLEditor.active_tab_index(app) == 1
+    end
+
+    test "handle_key with :tab inserts two spaces" do
+      app = App.new(focus: :editor)
+      app = SQLEditor.handle_key(app, :tab)
+      active = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      assert active.content == "  "
+    end
+
+    test "typing word activates completion state and Tab applies suggestion" do
+      app = App.new(focus: :editor)
+      app = SQLEditor.handle_key(app, "S")
+      app = SQLEditor.handle_key(app, "E")
+
+      active = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      comp = active.completion
+      assert comp.active? == true
+      assert length(comp.suggestions) > 0
+
+      # Down arrow moves selection
+      app = SQLEditor.handle_key(app, :down)
+      active = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      assert active.completion.selected_index == 1
+
+      # Tab applies selected suggestion
+      app = SQLEditor.handle_key(app, :tab)
+      active = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      assert active.content =~ "SET"
+      assert active.completion.active? == false
     end
   end
 end

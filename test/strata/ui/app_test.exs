@@ -149,5 +149,122 @@ defmodule Strata.UI.AppTest do
       app = App.handle_mouse(app, {:click, 50, 5})
       assert app.focus == :editor
     end
+
+    test "handles click on datagrid cell and selects correct row and column with column spacing" do
+      cols = ["id", "name", "role", "status", "email"]
+      rows = [
+        [1, "Alice", "Admin", "Active", "alice@example.com"],
+        [2, "Bob", "Developer", "Inactive", "bob@example.com"]
+      ]
+      grid = Strata.UI.Components.DataGrid.new(cols, rows)
+
+      # Window size 120x40, table_view active (datagrid full height, x: 30, y: 0)
+      app = App.new(active_view: :table_view, datagrid_state: grid, window_size: {120, 40})
+
+      # Column widths:
+      # Col 0 ("id"): 5  -> rel_x: 0..4 (x: 31..35)
+      # Col 1 ("name"): 8 -> rel_x: 6..13 (x: 37..44)
+      # Col 2 ("role"): 12 -> rel_x: 15..26 (x: 46..57)
+      # Col 3 ("status"): 11 -> rel_x: 28..38 (x: 59..69)
+      # Col 4 ("email"): 20 -> rel_x: 40..59 (x: 71..90)
+
+      # Click Col 0 ("id"): x = 33, y = 2
+      a0 = App.handle_mouse(app, {:click, 33, 2})
+      assert a0.datagrid_state.selected_cell == {0, 0}
+
+      # Click Col 1 ("name"): x = 38, y = 2
+      a1 = App.handle_mouse(app, {:click, 38, 2})
+      assert a1.datagrid_state.selected_cell == {0, 1}
+
+      # Click Col 2 ("role"): x = 45, y = 2
+      a2 = App.handle_mouse(app, {:click, 45, 2})
+      assert a2.datagrid_state.selected_cell == {0, 2}
+
+      # Click Col 3 ("status"): x = 55, y = 3
+      a3 = App.handle_mouse(app, {:click, 55, 3})
+      assert a3.datagrid_state.selected_cell == {1, 3}
+
+      # Click Col 4 ("email"): x = 65, y = 3
+      a4 = App.handle_mouse(app, {:click, 65, 3})
+      assert a4.datagrid_state.selected_cell == {1, 4}
+    end
+  end
+
+  describe "SQL Query execution and tab shortcuts" do
+    test "execute_sql_query warns when SQL is empty" do
+      app = App.new()
+      app = App.execute_sql_query(app)
+
+      assert app.status_message =~ "empty SQL query"
+    end
+
+    test "Ctrl+T and Ctrl+W manage editor tabs" do
+      app = App.new()
+      assert length(app.tabs) == 1
+
+      app = App.handle_key(app, {:ctrl, "t"})
+      assert length(app.tabs) == 2
+
+      app = App.handle_key(app, {:ctrl, "w"})
+      assert length(app.tabs) == 1
+    end
+
+    test "Ctrl+Enter and Ctrl+R trigger execute_sql_query" do
+      app = App.new(focus: :editor)
+      app = App.handle_key(app, {:ctrl, "enter"})
+      assert app.status_message =~ "empty SQL query"
+
+      app = App.handle_key(app, {:ctrl, "r"})
+      assert app.status_message =~ "empty SQL query"
+    end
+
+    test "Esc in editor focus mode unfocuses back to datagrid (navigation mode)" do
+      app = App.new(focus: :editor)
+      app = App.handle_key(app, :esc)
+      assert app.focus == :datagrid
+    end
+  end
+
+  describe "Table view load_more_table_data & infinite scroll" do
+    test "load_more_table_data triggers async Task and updates state via handle_info" do
+      grid = Strata.UI.Components.DataGrid.new(["id", "name"], [[1, "User 1"]], has_more: true, loading_more: false)
+
+      app =
+        App.new(
+          active_view: :table_view,
+          selected_table: "users",
+          datagrid_state: grid
+        )
+
+      updated = App.load_more_table_data(app)
+
+      assert updated.datagrid_state.loading_more == true
+      assert updated.status_message =~ "Loading more rows"
+
+      # Simulate receiving async chunk loaded message
+      fake_result = {:ok, ["id", "name"], [[2, "User 2"]]}
+      {:noreply, final_state} = App.handle_info({:table_chunk_loaded, "users", 1, fake_result}, updated)
+
+      assert final_state.datagrid_state.loading_more == false
+      assert length(final_state.datagrid_state.rows) == 2
+      assert final_state.status_message =~ "Loaded +1 rows"
+    end
+
+    test "load_more_table_data ignores request if has_more is false or loading_more is true" do
+      grid = Strata.UI.Components.DataGrid.new(["id", "name"], [[1, "User 1"]], has_more: false, loading_more: false)
+
+      app =
+        App.new(
+          active_view: :table_view,
+          selected_table: "users",
+          datagrid_state: grid
+        )
+
+      assert App.load_more_table_data(app) == app
+
+      grid_loading = %{grid | has_more: true, loading_more: true}
+      app_loading = %{app | datagrid_state: grid_loading}
+      assert App.load_more_table_data(app_loading) == app_loading
+    end
   end
 end

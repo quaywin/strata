@@ -70,9 +70,9 @@ defmodule Strata.UI.Components.Footer do
     [
       {"Ctrl+1/2", "Table/Query View"},
       {"Ctrl+Enter", "Run Query"},
-      {"Tab", "Focus Pane"},
-      {"Ctrl+N", "New Tab"},
-      {"q", "Quit"}
+      {"Ctrl+T", "New Tab"},
+      {"Esc", "Unfocus Editor"},
+      {"Tab", "Focus Pane"}
     ]
   end
 

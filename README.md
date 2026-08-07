@@ -24,7 +24,7 @@ It combines intuitive database management features (PostgreSQL, MySQL, SQLite, S
   - 🆔 **Auto 16-Byte UUID Decoding**: Decodes 16-byte binary data into standard **UUID string format** (`8-4-4-4-12`).
   - 🗂️ **Hex Dump View**: Displays Hex + ASCII breakdown for binary data (`BLOB`, `BYTEA`, Images).
 - 🗝️ **SSH Tunneling System**: Automatically parses `~/.ssh/config` and manages SSH Profiles. Establishes native Erlang `:ssh` port forwarding to securely access databases in private VPC networks.
-- 📜 **Multi-Tab SQL Editor**: Multi-tab SQL query editor with syntax highlighting and `F5` / `Ctrl+Enter` execution shortcuts.
+- 📜 **Multi-Tab SQL Editor**: Multi-tab SQL query editor with syntax highlighting and `Ctrl+Enter` / `Ctrl+R` execution shortcuts.
 - 🧪 **Live Connection Testing**: Instant DB & SSH handshake testing (**`[⚡ Test Connection]`** / **`[⚡ Test SSH]`**) with visual Green/Red status feedback.
 - 📤 **Data Export & Filter**: Quick filtering with `WHERE` / `ORDER BY` clauses and data table exports to **CSV**, **JSON**, or **SQL Insert Statements**.
 - 📦 **Single-Binary Distribution**: Packaged as a standalone executable via **Burrito** (no Erlang/Elixir runtime required on target machines).
@@ -102,6 +102,8 @@ The compiled binaries will be output to `burrito_out/`:
 | `2` | Global | Switch to **SQL Query View** |
 | `3` | Global | Focus **Data Grid** |
 | `Tab` / `Shift+Tab` | Global / Modals | Cycle focus between Panels / Input fields |
+| `Ctrl+Enter` / `Ctrl+R` | SQL Editor | Execute active SQL query |
+| `Ctrl+T` / `Ctrl+W` | SQL Editor | Open new query tab / Close active tab |
 | `a` | Sidebar | Open **Add DB Connection** modal |
 | `e` | Sidebar / Data | Edit DB Connection / Open **Export Data** modal |
 | `f` / `/` | Data Grid | Open **Filter & Sort** modal (`WHERE` / `ORDER BY`) |
@@ -111,7 +113,7 @@ The compiled binaries will be output to `burrito_out/`:
 | `↑` / `↓` / `←` / `→` | Data Grid / Tree | Move cell selection / Scroll list |
 | `PageUp` / `PageDown` | Data Grid / Modal | Page scroll (10 rows) |
 | `Mouse Wheel` | Data Grid / Tree | Scroll lists with mouse |
-| `Esc` / `q` | Global / Modals | Close modal or cancel action |
+| `Esc` / `q` | Global / Editor | Unfocus Editor (return to Navigation) or close modal |
 
 ---
 

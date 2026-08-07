@@ -122,12 +122,31 @@ defmodule Strata.UI.Renderer do
     sidebar_chunk = Sidebar.render(app, area)
     fg = if app.focus == :sidebar, do: :yellow, else: :cyan
 
+    # Manually manage scrolling: slice items to the visible viewport
+    all_items = sidebar_chunk.items
+    total = length(all_items)
+    viewport_h = max(1, area.height - 2)
+    scroll_offset = Map.get(app, :sidebar_scroll_offset, 0)
+    max_offset = max(0, total - viewport_h)
+    clamped_offset = min(scroll_offset, max_offset)
+
+    visible_items = Enum.slice(all_items, clamped_offset, viewport_h)
+
+    # Adjust selected index relative to the visible slice
+    global_selected = sidebar_chunk.selected_index || 0
+    local_selected =
+      if global_selected >= clamped_offset and global_selected < clamped_offset + viewport_h do
+        global_selected - clamped_offset
+      else
+        nil
+      end
+
     list_widget = %ExRatatui.Widgets.List{
-      items: sidebar_chunk.items,
-      selected: sidebar_chunk.selected_index,
+      items: visible_items,
+      selected: local_selected,
       highlight_symbol: "> ",
       highlight_style: %ExRatatui.Style{fg: :yellow},
-      scroll_padding: 2,
+      scroll_padding: 0,
       block: %ExRatatui.Widgets.Block{
         title: " CONNECTIONS / SCHEMA ",
         borders: [:all],
@@ -137,9 +156,9 @@ defmodule Strata.UI.Renderer do
 
     scrollbar_widget = %ExRatatui.Widgets.Scrollbar{
       orientation: :vertical_right,
-      content_length: max(1, length(sidebar_chunk.items)),
-      position: sidebar_chunk.selected_index || 0,
-      viewport_content_length: max(1, area.height - 2),
+      content_length: max(1, total),
+      position: clamped_offset,
+      viewport_content_length: max(1, viewport_h),
       thumb_style: %ExRatatui.Style{fg: :yellow},
       track_style: %ExRatatui.Style{fg: :dark_gray}
     }
@@ -154,7 +173,35 @@ defmodule Strata.UI.Renderer do
       lines = Enum.map_join(editor_chunk.lines, "\n", fn l -> l.prefix <> l.text end)
       fg = if app.focus == :editor, do: :yellow, else: :cyan
 
-      widget = %ExRatatui.Widgets.Paragraph{
+      tab_height = 1
+      body_height = max(1, area.height - tab_height)
+
+      tabs_rect = %ExRatatui.Layout.Rect{
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: tab_height
+      }
+
+      body_rect = %ExRatatui.Layout.Rect{
+        x: area.x,
+        y: area.y + tab_height,
+        width: area.width,
+        height: body_height
+      }
+
+      titles = Map.get(editor_chunk, :tab_titles, ["Query 1"])
+      selected_idx = Map.get(editor_chunk, :active_index, 0)
+
+      tabs_widget = %ExRatatui.Widgets.Tabs{
+        titles: if(titles != [], do: titles, else: ["Query 1"]),
+        selected: selected_idx,
+        style: %ExRatatui.Style{fg: :white},
+        highlight_style: %ExRatatui.Style{fg: :black, bg: :yellow, modifiers: [:bold]},
+        divider: "│"
+      }
+
+      paragraph_widget = %ExRatatui.Widgets.Paragraph{
         text: lines,
         block: %ExRatatui.Widgets.Block{
           title: " SQL EDITOR ",
@@ -163,7 +210,60 @@ defmodule Strata.UI.Renderer do
         }
       }
 
-      {widget, to_rect(area)}
+      comp = Map.get(editor_chunk, :completion, %{})
+
+      completion_items =
+        if comp != %{} and Map.get(comp, :active?, false) and Map.get(comp, :suggestions, []) != [] do
+          suggs = comp.suggestions
+          sel_idx = comp.selected_index || 0
+          {c_row, c_col} = Map.get(editor_chunk, :cursor, {0, 0})
+
+          popup_width = 24
+          popup_height = min(7, length(suggs) + 2)
+
+          px = min(area.x + area.width - popup_width, area.x + c_col + 6)
+          py = min(area.y + area.height - popup_height, area.y + c_row + 2)
+
+          popup_rect = %ExRatatui.Layout.Rect{
+            x: max(area.x, px),
+            y: max(area.y, py),
+            width: popup_width,
+            height: popup_height
+          }
+
+          items =
+            Enum.map(suggs, fn sug ->
+              icon =
+                case sug.type do
+                  :keyword -> "🔤"
+                  :table -> "📋"
+                  :column -> "🔹"
+                  _ -> "•"
+                end
+
+              " #{icon} #{sug.label}"
+            end)
+
+          clear_w = %ExRatatui.Widgets.Clear{}
+
+          list_w = %ExRatatui.Widgets.List{
+            items: items,
+            selected: sel_idx,
+            highlight_symbol: "> ",
+            highlight_style: %ExRatatui.Style{fg: :black, bg: :yellow, modifiers: [:bold]},
+            block: %ExRatatui.Widgets.Block{
+              title: " SUGGESTIONS ",
+              borders: [:all],
+              border_style: %ExRatatui.Style{fg: :yellow}
+            }
+          }
+
+          [{clear_w, popup_rect}, {list_w, popup_rect}]
+        else
+          []
+        end
+
+      [{tabs_widget, tabs_rect}, {paragraph_widget, body_rect}] ++ completion_items
     else
       widget = %ExRatatui.Widgets.Paragraph{text: ""}
       {widget, to_rect(area)}
@@ -177,48 +277,93 @@ defmodule Strata.UI.Renderer do
     fg = if app.focus == :datagrid, do: :yellow, else: :cyan
 
     mode_badge = if grid.mode == :selecting, do: " [SELECT MODE] ", else: " [BROWSING - Press 'v' to Select] "
+    loading_badge = if grid.loading_more, do: " [⏳ Loading more...] ", else: ""
+    total_loaded_rows = grid.total_rows || length(all_rows)
+
+    more_status =
+      cond do
+        grid.loading_more -> "loading..."
+        grid.has_more -> "scroll for more"
+        true -> "all loaded"
+      end
 
     title =
       case Map.get(app, :active_view) do
         :table_view ->
           tbl = Map.get(app, :selected_table)
-          if tbl, do: "TABLE VIEW: #{tbl} (#{length(all_rows)} rows)#{mode_badge}", else: "TABLE VIEW#{mode_badge}"
+
+          if tbl,
+            do: "TABLE VIEW: #{tbl} (#{total_loaded_rows} rows - #{more_status})#{loading_badge}#{mode_badge}",
+            else: "TABLE VIEW#{loading_badge}#{mode_badge}"
 
         :query_view ->
-          "QUERY RESULT GRID (#{length(all_rows)} rows)#{mode_badge}"
+          "QUERY RESULT GRID (#{total_loaded_rows} rows)#{mode_badge}"
 
         _ ->
-          "RESULT DATA GRID (#{length(all_rows)} rows)#{mode_badge}"
-      end
-
-    widths =
-      if grid.columns == [] do
-        [{:fill, 1}]
-      else
-        Enum.map(Enum.with_index(grid.columns), fn {col_name, col_i} ->
-          max_len =
-            all_rows
-            |> Enum.map(fn row ->
-              str = Strata.Formatter.sanitize_cell(Enum.at(row, col_i, ""))
-              String.length(str)
-            end)
-            |> Enum.max(fn -> 0 end)
-
-          w = max(String.length(to_string(col_name)), min(40, max_len)) + 3
-          {:length, w}
-        end)
+          "RESULT DATA GRID (#{total_loaded_rows} rows)#{mode_badge}"
       end
 
     viewport_h = max(1, area.height - 3)
-    max_top = max(0, length(all_rows) - viewport_h)
+    max_top = max(0, total_loaded_rows - viewport_h)
 
-    scroll_top = min(grid.scroll_offset || 0, max_top)
+    # Keep scroll_top aligned with r_idx if selecting, to prevent out-of-bounds selection jumps
+    scroll_top =
+      if grid.mode == :selecting and r_idx != nil do
+        cond do
+          r_idx < (grid.scroll_offset || 0) ->
+            max(0, r_idx)
 
-    display_rows = Enum.drop(all_rows, scroll_top)
-    string_rows = Enum.map(display_rows, fn row -> Enum.map(row, &Strata.Formatter.sanitize_cell/1) end)
-    string_header = Enum.map(grid.columns, &to_string/1)
+          r_idx >= (grid.scroll_offset || 0) + viewport_h ->
+            min(max_top, r_idx - viewport_h + 1)
+
+          true ->
+            min(grid.scroll_offset || 0, max_top)
+        end
+      else
+        min(grid.scroll_offset || 0, max_top)
+      end
+
+    display_rows = Enum.slice(all_rows, scroll_top, viewport_h)
+
+    max_width = max(1, area.width - 3)
+
+    all_w = DataGrid.static_widths(grid)
+    max_off = DataGrid.max_col_offset(all_w, max_width)
+    col_offset = min(grid.col_offset || 0, max_off)
+    visible_raw_cols = Enum.slice(grid.columns, col_offset, length(grid.columns))
+    col_widths = DataGrid.column_widths_from_all_w(all_w, max_width, col_offset)
+
+    visible_col_count = Enum.count(col_widths, fn w -> w > 0 end)
+    visible_columns = Enum.take(visible_raw_cols, visible_col_count)
+    active_col_widths = Enum.take(col_widths, visible_col_count)
+
+    widths =
+      cond do
+        visible_columns == [] ->
+          [{:fill, 1}]
+
+        true ->
+          {front, [_last_w]} = Enum.split(active_col_widths, -1)
+          Enum.map(front, fn w -> {:length, w} end) ++ [{:fill, 1}]
+      end
+
+    string_rows =
+      Enum.map(display_rows, fn row ->
+        visible_cells = Enum.slice(row, col_offset, visible_col_count)
+
+        Enum.zip(visible_cells, active_col_widths)
+        |> Enum.map(fn {cell_val, col_w} ->
+          Strata.Formatter.format_cell_span(cell_val, col_w)
+        end)
+      end)
+
+    string_header =
+      Enum.map(visible_columns, fn col_name ->
+        to_string(col_name)
+      end)
 
     local_row_idx = (r_idx || 0) - scroll_top
+    local_col_idx = (c_idx || 0) - col_offset
 
     selected_row =
       if grid.mode == :selecting and string_rows != [] and local_row_idx >= 0 and local_row_idx < length(string_rows) do
@@ -227,7 +372,25 @@ defmodule Strata.UI.Renderer do
         nil
       end
 
-    selected_col = if grid.mode == :selecting and grid.columns != [] and c_idx < length(grid.columns), do: c_idx, else: nil
+    selected_col =
+      if grid.mode == :selecting and visible_columns != [] and local_col_idx >= 0 and local_col_idx < length(visible_columns) do
+        local_col_idx
+      else
+        nil
+      end
+
+    has_left_cols? = col_offset > 0
+    has_right_cols? = col_offset + visible_col_count < length(grid.columns)
+
+    scroll_indicator =
+      cond do
+        has_left_cols? and has_right_cols? -> " [◀ Cols #{col_offset + 1}-#{col_offset + visible_col_count}/#{length(grid.columns)} ▶] "
+        has_left_cols? -> " [◀ Cols #{col_offset + 1}-#{col_offset + visible_col_count}/#{length(grid.columns)}] "
+        has_right_cols? -> " [Cols 1-#{visible_col_count}/#{length(grid.columns)} ▶] "
+        true -> ""
+      end
+
+    title_with_indicator = title <> scroll_indicator
 
     highlight_sym = ""
     highlight_st = if grid.mode == :selecting, do: %ExRatatui.Style{fg: :black, bg: :yellow}, else: %ExRatatui.Style{}
@@ -240,11 +403,12 @@ defmodule Strata.UI.Renderer do
       selected: selected_row,
       selected_column: selected_col,
       highlight_symbol: highlight_sym,
+      highlight_spacing: :never,
       header_style: %ExRatatui.Style{fg: :yellow, modifiers: [:bold]},
       highlight_style: highlight_st,
       cell_highlight_style: cell_highlight_st,
       block: %ExRatatui.Widgets.Block{
-        title: " #{title} ",
+        title: " #{title_with_indicator} ",
         borders: [:all],
         border_style: %ExRatatui.Style{fg: fg}
       }
@@ -252,18 +416,51 @@ defmodule Strata.UI.Renderer do
 
     rect = to_rect(area)
 
-    if length(all_rows) > viewport_h do
-      scrollbar_widget = %ExRatatui.Widgets.Scrollbar{
-        orientation: :vertical_right,
-        content_length: max_top,
-        position: scroll_top,
-        thumb_style: %ExRatatui.Style{fg: :yellow},
-        track_style: %ExRatatui.Style{fg: :dark_gray}
-      }
+    v_scrollbar =
+      if length(all_rows) > viewport_h do
+        [
+          {%ExRatatui.Widgets.Scrollbar{
+             orientation: :vertical_right,
+             content_length: max_top,
+             position: scroll_top,
+             thumb_symbol: "┃",
+             track_symbol: "│",
+             begin_symbol: "▲",
+             end_symbol: "▼",
+             thumb_style: %ExRatatui.Style{fg: :yellow, modifiers: [:bold]},
+             track_style: %ExRatatui.Style{fg: :dark_gray}
+           }, rect}
+        ]
+      else
+        []
+      end
 
-      [{widget, rect}, {scrollbar_widget, rect}]
-    else
-      {widget, rect}
+    h_scrollbar =
+      if length(grid.columns) > visible_col_count do
+        max_col_off = DataGrid.max_col_offset(grid.columns, all_rows, max_width)
+
+        [
+          {%ExRatatui.Widgets.Scrollbar{
+             orientation: :horizontal_bottom,
+             content_length: max(1, max_col_off),
+             position: col_offset,
+             thumb_symbol: "━",
+             track_symbol: "─",
+             begin_symbol: "◀",
+             end_symbol: "▶",
+             thumb_style: %ExRatatui.Style{fg: :yellow, modifiers: [:bold]},
+             track_style: %ExRatatui.Style{fg: :dark_gray}
+           }, rect}
+        ]
+      else
+        []
+      end
+
+    widgets = [{widget, rect}] ++ v_scrollbar ++ h_scrollbar
+
+    case widgets do
+      [single] -> single
+      list -> list
     end
   end
 

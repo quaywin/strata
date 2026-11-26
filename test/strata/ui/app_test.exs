@@ -229,6 +229,19 @@ defmodule Strata.UI.AppTest do
 
   describe "Table view load_more_table_data & infinite scroll" do
     test "load_more_table_data triggers async Task and updates state via handle_info" do
+      prof = %Strata.ConnectionProfile{
+        id: "load_more_conn_#{System.unique_integer([:positive])}",
+        name: "Load More SQLite",
+        driver: :sqlite,
+        database: ":memory:"
+      }
+
+      :ok = Strata.ConfigStore.put_profile(prof)
+
+      on_exit(fn ->
+        Strata.ConfigStore.delete_profile(prof.id)
+      end)
+
       grid =
         Strata.UI.Components.DataGrid.new(["id", "name"], [[1, "User 1"]],
           has_more: true,
@@ -239,6 +252,7 @@ defmodule Strata.UI.AppTest do
         App.new(
           active_view: :table_view,
           selected_table: "users",
+          selected_tree_node_id: "#{prof.id}_table_users",
           datagrid_state: grid
         )
 

@@ -79,7 +79,7 @@ System requirements: **Elixir 1.18+** and **Erlang/OTP 28+** (or use [mise](http
 git clone https://github.com/quaywin/strata.git
 cd strata
 
-# 2. Install toolchain (Erlang, Elixir, Zig 0.16.0, Rust)
+# 2. Install toolchain (Erlang, Elixir, Zig 0.15.2, Rust)
 mise install
 
 # 3. Install dependencies
@@ -100,7 +100,7 @@ mix test
 
 ### Standalone Binary Build (Production Release)
 
-Build a single self-contained executable binary using Burrito (requires `zig` 0.16.0 and `xz`):
+Build a single self-contained executable binary using Burrito (requires `zig` 0.15.2 and `xz`):
 
 ```bash
 # Build for your current host architecture

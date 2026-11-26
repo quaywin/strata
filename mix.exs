@@ -314,7 +314,7 @@ defmodule Strata.MixProject do
       {:jason, "~> 1.4"},
       {:ex_ratatui, "~> 0.21.0"},
       {:phoenix_pubsub, "~> 2.4"},
-      {:burrito, "~> 1.6", runtime: false}
+      {:burrito, "~> 1.5.0", runtime: false}
     ]
   end
 end

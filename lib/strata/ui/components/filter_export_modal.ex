@@ -7,7 +7,7 @@ defmodule Strata.UI.Components.FilterExportModal do
   @export_formats [:csv, :json, :sql]
   @export_scopes [:all, :current_page]
 
-  @filter_fields [:where, :order_by, :limit, :apply_button, :cancel_button]
+  @filter_fields [:where, :order_by, :limit, :apply_button, :clear_button, :cancel_button]
   @export_fields [:format, :file_path, :scope, :export_button, :cancel_button]
 
   defstruct [
@@ -16,12 +16,15 @@ defmodule Strata.UI.Components.FilterExportModal do
     where_clause: "",
     order_by_clause: "",
     limit: nil,
+    columns: [],
+    selected_column: nil,
     # Export mode fields
     format: :csv,
     file_path: "export.csv",
     scope: :all,
-    # Focus and status
+    # Focus, cursor, and status
     focused_field: :where,
+    cursor_pos: 0,
     status: :idle,
     status_message: nil
   ]
@@ -31,10 +34,13 @@ defmodule Strata.UI.Components.FilterExportModal do
           where_clause: String.t(),
           order_by_clause: String.t(),
           limit: integer() | nil,
+          columns: [String.t()],
+          selected_column: String.t() | nil,
           format: :csv | :json | :sql,
           file_path: String.t(),
           scope: :all | :current_page,
           focused_field: atom(),
+          cursor_pos: non_neg_integer(),
           status: :idle | :success | :error,
           status_message: String.t() | nil
         }
@@ -56,14 +62,21 @@ defmodule Strata.UI.Components.FilterExportModal do
     where = Keyword.get(opts, :where, "")
     order_by = Keyword.get(opts, :order_by, "")
     limit = Keyword.get(opts, :limit)
+    columns = Keyword.get(opts, :columns, [])
+    selected_column = Keyword.get(opts, :selected_column)
+    focused = Keyword.get(opts, :focused_field, :where)
 
-    %__MODULE__{
+    modal = %__MODULE__{
       mode: :filter,
       where_clause: where,
       order_by_clause: order_by,
       limit: limit,
-      focused_field: :where
+      columns: columns,
+      selected_column: selected_column,
+      focused_field: focused
     }
+
+    %{modal | cursor_pos: field_text_length(modal, focused)}
   end
 
   @doc """
@@ -73,29 +86,32 @@ defmodule Strata.UI.Components.FilterExportModal do
     format = Keyword.get(opts, :format, :csv)
     file_path = Keyword.get(opts, :file_path, "export." <> Atom.to_string(format))
     scope = Keyword.get(opts, :scope, :all)
+    focused = Keyword.get(opts, :focused_field, :format)
 
-    %__MODULE__{
+    modal = %__MODULE__{
       mode: :export,
       format: format,
       file_path: file_path,
       scope: scope,
-      focused_field: :format
+      focused_field: focused
     }
+
+    %{modal | cursor_pos: field_text_length(modal, focused)}
   end
 
   @doc """
-  Handles keyboard events for field navigation, format/scope cycling, and text input.
+  Handles keyboard events for field navigation, cursor movement, format/scope cycling, and text input.
   """
   def handle_key(%__MODULE__{} = modal, :tab) do
     fields = fields_for_mode(modal.mode)
     next_field = get_next_field(fields, modal.focused_field, 1)
-    %{modal | focused_field: next_field}
+    %{modal | focused_field: next_field, cursor_pos: field_text_length(modal, next_field)}
   end
 
   def handle_key(%__MODULE__{} = modal, :shift_tab) do
     fields = fields_for_mode(modal.mode)
     prev_field = get_next_field(fields, modal.focused_field, -1)
-    %{modal | focused_field: prev_field}
+    %{modal | focused_field: prev_field, cursor_pos: field_text_length(modal, prev_field)}
   end
 
   def handle_key(%__MODULE__{} = modal, :down) do
@@ -146,42 +162,114 @@ defmodule Strata.UI.Components.FilterExportModal do
     %{modal | scope: next_scope}
   end
 
-  # Backspace handling
-  def handle_key(%__MODULE__{focused_field: field} = modal, :backspace)
-      when field in [:where, :order_by, :limit, :file_path] do
-    val = Map.get(modal, field_key(field))
-    val_str = if is_integer(val), do: Integer.to_string(val), else: to_string(val || "")
-    new_val_str = String.slice(val_str, 0, max(0, String.length(val_str) - 1))
-
-    new_val =
-      if field == :limit do
-        case Integer.parse(new_val_str) do
-          {i, ""} -> i
-          _ -> nil
-        end
-      else
-        new_val_str
-      end
-
-    Map.put(modal, field_key(field), new_val)
+  # Action buttons & quick submit
+  def handle_key(%__MODULE__{mode: :filter, focused_field: :apply_button} = modal, key)
+      when key in [:enter, :space] do
+    {:apply, {:filter, modal.where_clause, modal.order_by_clause, modal.limit}, modal}
   end
 
-  # Text entry handling
+  def handle_key(%__MODULE__{mode: :filter, focused_field: :clear_button} = modal, key)
+      when key in [:enter, :space] do
+    cleared = %{modal | where_clause: "", order_by_clause: "", limit: nil, cursor_pos: 0}
+    {:apply, {:filter, "", "", nil}, cleared}
+  end
+
+  def handle_key(%__MODULE__{mode: :filter}, {:ctrl, "l"}) do
+    cleared = %{modal_reset_filter() | columns: []}
+    {:apply, {:filter, "", "", nil}, cleared}
+  end
+
+  def handle_key(%__MODULE__{mode: :export, focused_field: :export_button} = modal, key)
+      when key in [:enter, :space] do
+    {:apply, {:export, modal.format, modal.file_path, modal.scope}, modal}
+  end
+
+  def handle_key(%__MODULE__{focused_field: :cancel_button} = modal, key)
+      when key in [:enter, :space] do
+    {:cancel, modal}
+  end
+
+  def handle_key(%__MODULE__{mode: :filter, focused_field: field} = modal, :enter)
+      when field in [:where, :order_by, :limit] do
+    {:apply, {:filter, modal.where_clause, modal.order_by_clause, modal.limit}, modal}
+  end
+
+  def handle_key(%__MODULE__{mode: :export, focused_field: :file_path} = modal, :enter) do
+    {:apply, {:export, modal.format, modal.file_path, modal.scope}, modal}
+  end
+
+  # Cursor navigation in text fields
+  def handle_key(%__MODULE__{focused_field: field} = modal, :left)
+      when field in [:where, :order_by, :limit, :file_path] do
+    len = field_text_length(modal, field)
+    pos = min(modal.cursor_pos || len, len)
+    %{modal | cursor_pos: max(0, pos - 1)}
+  end
+
+  def handle_key(%__MODULE__{focused_field: field} = modal, :right)
+      when field in [:where, :order_by, :limit, :file_path] do
+    len = field_text_length(modal, field)
+    pos = min(modal.cursor_pos || len, len)
+    %{modal | cursor_pos: min(len, pos + 1)}
+  end
+
+  def handle_key(%__MODULE__{focused_field: field} = modal, :home)
+      when field in [:where, :order_by, :limit, :file_path] do
+    %{modal | cursor_pos: 0}
+  end
+
+  def handle_key(%__MODULE__{focused_field: field} = modal, :end)
+      when field in [:where, :order_by, :limit, :file_path] do
+    %{modal | cursor_pos: field_text_length(modal, field)}
+  end
+
+  # Clear active field (Ctrl+U / Ctrl+K)
+  def handle_key(%__MODULE__{focused_field: field} = modal, key)
+      when key in [{:ctrl, "u"}, {:ctrl, "k"}] and field in [:where, :order_by, :limit, :file_path] do
+    empty_val = if field == :limit, do: nil, else: ""
+
+    modal
+    |> Map.put(field_key(field), empty_val)
+    |> Map.put(:cursor_pos, 0)
+  end
+
+  # Backspace and Delete handling at cursor position
+  def handle_key(%__MODULE__{focused_field: field} = modal, :backspace)
+      when field in [:where, :order_by, :limit, :file_path] do
+    val_str = field_text(modal, field)
+    pos = clamp_cursor(modal.cursor_pos, val_str)
+
+    if pos == 0 do
+      modal
+    else
+      {left, right} = String.split_at(val_str, pos)
+      new_str = String.slice(left, 0, String.length(left) - 1) <> right
+      update_text_field(modal, field, new_str, pos - 1)
+    end
+  end
+
+  def handle_key(%__MODULE__{focused_field: field} = modal, :delete)
+      when field in [:where, :order_by, :limit, :file_path] do
+    val_str = field_text(modal, field)
+    pos = clamp_cursor(modal.cursor_pos, val_str)
+
+    if pos >= String.length(val_str) do
+      modal
+    else
+      {left, right} = String.split_at(val_str, pos)
+      new_str = left <> String.slice(right, 1, String.length(right))
+      update_text_field(modal, field, new_str, pos)
+    end
+  end
+
+  # Text entry / paste handling at cursor position
   def handle_key(%__MODULE__{focused_field: field} = modal, key)
       when is_binary(key) and field in [:where, :order_by, :limit, :file_path] do
-    val = Map.get(modal, field_key(field))
-
-    if field == :limit do
-      val_str = Integer.to_string(val || 0) <> key
-
-      case Integer.parse(val_str) do
-        {i, ""} -> %{modal | limit: i}
-        _ -> modal
-      end
-    else
-      val_str = (val || "") <> key
-      Map.put(modal, field_key(field), val_str)
-    end
+    val_str = field_text(modal, field)
+    pos = clamp_cursor(modal.cursor_pos, val_str)
+    {left, right} = String.split_at(val_str, pos)
+    candidate = left <> key <> right
+    update_text_field(modal, field, candidate, pos + String.length(key))
   end
 
   def handle_key(modal, _key), do: modal
@@ -264,18 +352,31 @@ defmodule Strata.UI.Components.FilterExportModal do
   Renders structured map representation of the modal for TUI rendering.
   """
   def render(%__MODULE__{mode: :filter} = modal, area) do
+    where_display = display_with_cursor(modal.where_clause, modal.focused_field == :where, modal.cursor_pos, "e.g. status = 'active' AND id > 10")
+    order_display = display_with_cursor(modal.order_by_clause, modal.focused_field == :order_by, modal.cursor_pos, "e.g. created_at DESC")
+
+    limit_raw = if modal.limit, do: Integer.to_string(modal.limit), else: ""
+    limit_display = display_with_cursor(limit_raw, modal.focused_field == :limit, modal.cursor_pos, "e.g. 100")
+
     fields = [
-      %{label: "WHERE Clause", key: :where, value: modal.where_clause, type: :text},
-      %{label: "ORDER BY Clause", key: :order_by, value: modal.order_by_clause, type: :text},
-      %{
-        label: "LIMIT Records",
-        key: :limit,
-        value: if(modal.limit, do: Integer.to_string(modal.limit), else: ""),
-        type: :text
-      },
+      %{label: "WHERE Clause", key: :where, value: where_display, type: :text},
+      %{label: "ORDER BY Clause", key: :order_by, value: order_display, type: :text},
+      %{label: "LIMIT Records", key: :limit, value: limit_display, type: :text},
       %{label: "[ Apply Filter ]", key: :apply_button, type: :button},
+      %{label: "[ Clear Filter ]", key: :clear_button, type: :button},
       %{label: "[ Cancel ]", key: :cancel_button, type: :button}
     ]
+
+    cols_hint =
+      if modal.columns != [] do
+        cols_preview = modal.columns |> Enum.take(8) |> Enum.join(", ")
+        suffix = if length(modal.columns) > 8, do: ", ...", else: ""
+        "Columns: #{cols_preview}#{suffix}\n  "
+      else
+        ""
+      end
+
+    tips = cols_hint <> "Tips: Enter Apply · ←/→ Cursor · Ctrl+V Paste · Ctrl+U Clear line · Ctrl+L Reset"
 
     %{
       title: "FILTER & SORT DATA",
@@ -284,11 +385,13 @@ defmodule Strata.UI.Components.FilterExportModal do
       focused_field: modal.focused_field,
       fields: fields,
       status: modal.status,
-      status_message: modal.status_message
+      status_message: modal.status_message || tips
     }
   end
 
   def render(%__MODULE__{mode: :export} = modal, area) do
+    path_display = display_with_cursor(modal.file_path, modal.focused_field == :file_path, modal.cursor_pos, "export.csv")
+
     fields = [
       %{
         label: "Format",
@@ -297,7 +400,7 @@ defmodule Strata.UI.Components.FilterExportModal do
         type: :select,
         options: Enum.map(@export_formats, &Atom.to_string/1)
       },
-      %{label: "File Path", key: :file_path, value: modal.file_path, type: :text},
+      %{label: "File Path", key: :file_path, value: path_display, type: :text},
       %{label: "Scope", key: :scope, value: Atom.to_string(modal.scope), type: :select, options: Enum.map(@export_scopes, &Atom.to_string/1)},
       %{label: "[ Export Data ]", key: :export_button, type: :button},
       %{label: "[ Cancel ]", key: :cancel_button, type: :button}
@@ -310,9 +413,11 @@ defmodule Strata.UI.Components.FilterExportModal do
       focused_field: modal.focused_field,
       fields: fields,
       status: modal.status,
-      status_message: modal.status_message
+      status_message: modal.status_message || "Tips: ←/→ Format/Scope · Ctrl+V Paste path · Enter Export"
     }
   end
+
+  defp modal_reset_filter, do: %__MODULE__{mode: :filter, focused_field: :where, cursor_pos: 0}
 
   defp fields_for_mode(:filter), do: @filter_fields
   defp fields_for_mode(:export), do: @export_fields
@@ -321,7 +426,63 @@ defmodule Strata.UI.Components.FilterExportModal do
   defp field_key(:order_by), do: :order_by_clause
   defp field_key(:limit), do: :limit
   defp field_key(:file_path), do: :file_path
-  defp field_key(k), do: k
+
+  defp field_text(modal, :limit) do
+    if is_integer(modal.limit), do: Integer.to_string(modal.limit), else: ""
+  end
+
+  defp field_text(modal, field) when field in [:where, :order_by, :file_path] do
+    to_string(Map.get(modal, field_key(field)) || "")
+  end
+
+  defp field_text(_modal, _field), do: ""
+
+  defp field_text_length(modal, field), do: String.length(field_text(modal, field))
+
+  defp clamp_cursor(pos, str) do
+    len = String.length(str)
+    pos = pos || len
+    max(0, min(len, pos))
+  end
+
+  defp update_text_field(modal, :limit, new_str, new_pos) do
+    trimmed = String.trim(new_str)
+
+    cond do
+      trimmed == "" ->
+        %{modal | limit: nil, cursor_pos: 0}
+
+      match?({i, ""} when i >= 0, Integer.parse(trimmed)) ->
+        {i, ""} = Integer.parse(trimmed)
+        %{modal | limit: i, cursor_pos: min(new_pos, String.length(trimmed))}
+
+      true ->
+        modal
+    end
+  end
+
+  defp update_text_field(modal, field, new_str, new_pos) do
+    modal
+    |> Map.put(field_key(field), new_str)
+    |> Map.put(:cursor_pos, max(0, min(String.length(new_str), new_pos)))
+  end
+
+  defp display_with_cursor(val, true, cursor_pos, placeholder) do
+    str = to_string(val || "")
+    pos = clamp_cursor(cursor_pos, str)
+    {left, right} = String.split_at(str, pos)
+
+    if str == "" do
+      "▏ (" <> placeholder <> ")"
+    else
+      left <> "▏" <> right
+    end
+  end
+
+  defp display_with_cursor(val, false, _cursor_pos, placeholder) do
+    str = to_string(val || "")
+    if str == "", do: "(#{placeholder})", else: str
+  end
 
   defp get_next_field(fields, current, delta) do
     idx = Enum.find_index(fields, &(&1 == current)) || 0

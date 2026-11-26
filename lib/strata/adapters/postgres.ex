@@ -49,6 +49,8 @@ defmodule Strata.Adapter.Postgres do
     SELECT schema_name
     FROM information_schema.schemata
     WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+      AND schema_name NOT LIKE 'pg_temp%'
+      AND schema_name NOT LIKE 'pg_toast_temp%'
     ORDER BY schema_name;
     """
 

@@ -1,12 +1,19 @@
 ## Customize flags given to the VM: https://www.erlang.org/doc/man/erl.html
 ## -mode/-name/-sname/-setcookie are configured via env vars, do not set them here
 
-## Increase number of concurrent ports/sockets
-##+Q 65536
+## Prevent idle BEAM schedulers from busy-waiting CPU
++sbwt none
++sbwtdcpu none
 
-## Tweak GC to run more often
-##-env ERL_FULLSWEEP_AFTER 10
+## Tune async thread pool for CLI/TUI application
++A 8
 
-## Enable deployment without epmd
-## (requires changing both vm.args and remote.vm.args)
-##-start_epmd false -erl_epmd_port 6789
+## Limit BEAM Schedulers to 2 for minimal RAM footprint (~18MB-25MB) without performance loss
++S 2:2
+
+## Disable epmd since Strata is a standalone binary
+-start_epmd false
+
+## noshell to prevent Erlang from hijacking stdin/stdout
+-noshell
+-noinput

@@ -10,33 +10,51 @@ defmodule Strata.UI.Components.DataGrid do
   defstruct [
     columns: [],
     rows: [],
+    rows_tuple: nil,
     cached_static_widths: [],
     selected_cell: {0, 0},
     page: 1,
     page_size: 20,
     total_rows: 0,
+    total_db_rows: nil,
     mode: :browsing,
+    view_mode: :data,
     scroll_offset: 0,
     col_offset: 0,
     has_more: true,
     loading_more: false,
-    batch_size: 100
+    batch_size: 100,
+    sort_by: nil,
+    primary_keys: [],
+    pending_edits: %{},
+    pending_inserts: [],
+    pending_deletes: MapSet.new(),
+    editing_cell: nil
   ]
 
   @type t :: %__MODULE__{
           columns: [String.t()],
           rows: [list()],
+          rows_tuple: tuple() | nil,
           cached_static_widths: [pos_integer()],
           selected_cell: cell(),
           page: pos_integer(),
           page_size: pos_integer(),
           total_rows: non_neg_integer(),
+          total_db_rows: non_neg_integer() | nil,
           mode: mode(),
+          view_mode: :data | :structure,
           scroll_offset: non_neg_integer(),
           col_offset: non_neg_integer(),
           has_more: boolean(),
           loading_more: boolean(),
-          batch_size: pos_integer()
+          batch_size: pos_integer(),
+          sort_by: {String.t(), :asc | :desc} | nil,
+          primary_keys: [String.t()],
+          pending_edits: map(),
+          pending_inserts: [list()],
+          pending_deletes: MapSet.t(),
+          editing_cell: cell() | nil
         }
 
   @doc """
@@ -53,23 +71,375 @@ defmodule Strata.UI.Components.DataGrid do
     has_more = Keyword.get(opts, :has_more, true)
     loading_more = Keyword.get(opts, :loading_more, false)
     batch_size = Keyword.get(opts, :batch_size, 100)
+    total_db_rows = Keyword.get(opts, :total_db_rows)
+    sort_by = Keyword.get(opts, :sort_by)
+    view_mode = Keyword.get(opts, :view_mode, :data)
+    primary_keys = Keyword.get(opts, :primary_keys, [])
 
     static_w = static_widths(columns, rows)
 
     %__MODULE__{
       columns: columns,
       rows: rows,
+      rows_tuple: List.to_tuple(rows),
       cached_static_widths: static_w,
       selected_cell: selected_cell,
       page: page,
       page_size: page_size,
       total_rows: length(rows),
+      total_db_rows: total_db_rows,
       mode: mode,
+      view_mode: view_mode,
       scroll_offset: scroll_offset,
       col_offset: col_offset,
       has_more: has_more,
       loading_more: loading_more,
-      batch_size: batch_size
+      batch_size: batch_size,
+      sort_by: sort_by,
+      primary_keys: primary_keys
+    }
+  end
+
+  @doc """
+  Returns total count of staged changes (cell edits + inserts + deletes).
+  """
+  @spec dirty_count(t()) :: non_neg_integer()
+  def dirty_count(%__MODULE__{} = grid) do
+    map_size(grid.pending_edits) + length(grid.pending_inserts) + MapSet.size(grid.pending_deletes)
+  end
+
+  @doc """
+  Returns all display rows combining loaded `rows`, overlaid `pending_edits`, and
+  staged `pending_inserts`.
+  """
+  @spec effective_rows(t()) :: [list()]
+  def effective_rows(%__MODULE__{rows: rows, pending_edits: edits, pending_inserts: inserts}) do
+    base_rows =
+      if map_size(edits) == 0 do
+        rows
+      else
+        edits_by_row =
+          Enum.group_by(edits, fn {{r_idx, _c_idx}, _val} -> r_idx end, fn {{_r_idx, c_idx}, val} ->
+            {c_idx, val.new}
+          end)
+
+        rows
+        |> Enum.with_index()
+        |> Enum.map(fn {row, r_idx} ->
+          case Map.get(edits_by_row, r_idx) do
+            nil ->
+              row
+
+            col_updates ->
+              Enum.reduce(col_updates, row, fn {c_idx, new_val}, acc ->
+                List.replace_at(acc, c_idx, new_val)
+              end)
+          end
+        end)
+      end
+
+    if inserts == [], do: base_rows, else: base_rows ++ inserts
+  end
+
+  @doc """
+  Returns base row count (excluding `pending_inserts`) in O(1) when `rows_tuple` is valid.
+  """
+  @spec base_row_count(t()) :: non_neg_integer()
+  def base_row_count(%__MODULE__{rows_tuple: rt} = grid) do
+    if rows_tuple_valid?(grid), do: tuple_size(rt), else: length(grid.rows)
+  end
+
+  @doc """
+  Returns total effective row count (`base_row_count + length(pending_inserts)`).
+  """
+  @spec effective_row_count(t()) :: non_neg_integer()
+  def effective_row_count(%__MODULE__{pending_inserts: inserts} = grid) do
+    base_row_count(grid) + length(inserts)
+  end
+
+  @doc """
+  Returns the single effective row at 0-based `abs_r` in O(1) (with pending edits overlaid),
+  or `nil` if out of bounds.
+  """
+  @spec effective_row_at(t(), integer()) :: list() | nil
+  def effective_row_at(%__MODULE__{} = grid, abs_r) when is_integer(abs_r) and abs_r >= 0 do
+    base_len = base_row_count(grid)
+
+    if abs_r < base_len do
+      row =
+        if rows_tuple_valid?(grid) do
+          elem(grid.rows_tuple, abs_r)
+        else
+          Enum.at(grid.rows, abs_r)
+        end
+
+      if row, do: apply_row_edits(row, abs_r, grid.pending_edits), else: nil
+    else
+      Enum.at(grid.pending_inserts, abs_r - base_len)
+    end
+  end
+
+  def effective_row_at(_grid, _abs_r), do: nil
+
+  @doc """
+  Returns only the visible `count` effective rows starting at `start_idx`, avoiding
+  O(N) traversal and list copying on large datasets.
+  """
+  @spec effective_rows_slice(t(), non_neg_integer(), integer()) :: [list()]
+  def effective_rows_slice(%__MODULE__{} = _grid, _start_idx, count) when count <= 0, do: []
+
+  def effective_rows_slice(%__MODULE__{} = grid, start_idx, count) do
+    start_idx = max(0, start_idx)
+    base_len = base_row_count(grid)
+    inserts = grid.pending_inserts
+    total_len = base_len + length(inserts)
+
+    if start_idx >= total_len do
+      []
+    else
+      end_idx = min(total_len - 1, start_idx + count - 1)
+      base_end = min(base_len - 1, end_idx)
+
+      base_slice =
+        if start_idx <= base_end do
+          raw_slice =
+            if rows_tuple_valid?(grid) do
+              rt = grid.rows_tuple
+              for i <- start_idx..base_end, do: elem(rt, i)
+            else
+              Enum.slice(grid.rows, start_idx, base_end - start_idx + 1)
+            end
+
+          if map_size(grid.pending_edits) == 0 do
+            raw_slice
+          else
+            edits_by_row =
+              Enum.reduce(grid.pending_edits, %{}, fn
+                {{r_idx, c_idx}, %{new: new_val}}, acc when r_idx >= start_idx and r_idx <= base_end ->
+                  Map.update(acc, r_idx, [{c_idx, new_val}], &[{c_idx, new_val} | &1])
+
+                _, acc ->
+                  acc
+              end)
+
+            if map_size(edits_by_row) == 0 do
+              raw_slice
+            else
+              raw_slice
+              |> Enum.with_index(start_idx)
+              |> Enum.map(fn {row, r_idx} ->
+                case Map.get(edits_by_row, r_idx) do
+                  nil ->
+                    row
+
+                  col_updates ->
+                    Enum.reduce(col_updates, row, fn {c_idx, new_val}, acc ->
+                      List.replace_at(acc, c_idx, new_val)
+                    end)
+                end
+              end)
+            end
+          end
+        else
+          []
+        end
+
+      needed_inserts = end_idx - max(start_idx, base_len) + 1
+
+      insert_slice =
+        if end_idx >= base_len and needed_inserts > 0 and inserts != [] do
+          ins_start = max(0, start_idx - base_len)
+          Enum.slice(inserts, ins_start, needed_inserts)
+        else
+          []
+        end
+
+      if insert_slice == [], do: base_slice, else: base_slice ++ insert_slice
+    end
+  end
+
+  defp rows_tuple_valid?(%__MODULE__{
+         rows: rows,
+         rows_tuple: rows_tuple,
+         total_rows: total_rows,
+         pending_inserts: inserts
+       })
+       when is_tuple(rows_tuple) do
+    t_size = tuple_size(rows_tuple)
+
+    cond do
+      rows == [] and t_size == 0 ->
+        true
+
+      rows != [] and t_size > 0 and hd(rows) == elem(rows_tuple, 0) ->
+        total_rows == 0 or total_rows == t_size + length(inserts)
+
+      true ->
+        false
+    end
+  end
+
+  defp rows_tuple_valid?(_grid), do: false
+
+  defp apply_row_edits(row, _abs_r, edits) when map_size(edits) == 0, do: row
+
+  defp apply_row_edits(row, abs_r, edits) do
+    Enum.reduce(edits, row, fn
+      {{^abs_r, c_idx}, %{new: new_val}}, acc -> List.replace_at(acc, c_idx, new_val)
+      _, acc -> acc
+    end)
+  end
+
+  @doc """
+  Cycles sort state for column at `col_idx` or named `col_name`:
+  `nil -> {col, :asc} -> {col, :desc} -> nil`.
+  """
+  @spec cycle_sort(t(), non_neg_integer() | String.t()) :: t()
+  def cycle_sort(%__MODULE__{columns: cols} = grid, col_name) when is_binary(col_name) do
+    case Enum.find_index(cols, &(to_string(&1) == col_name)) do
+      nil -> grid
+      idx -> cycle_sort(grid, idx)
+    end
+  end
+
+  def cycle_sort(%__MODULE__{columns: cols} = grid, col_idx) when is_integer(col_idx) do
+    case Enum.at(cols, col_idx) do
+      nil ->
+        grid
+
+      col_name ->
+        next_sort =
+          case grid.sort_by do
+            {^col_name, :asc} -> {col_name, :desc}
+            {^col_name, :desc} -> nil
+            _ -> {col_name, :asc}
+          end
+
+        %{grid | sort_by: next_sort}
+    end
+  end
+
+  @doc """
+  Sorts `grid.rows` in-memory according to `grid.sort_by`.
+  """
+  @spec sort_rows_in_memory(t()) :: t()
+  def sort_rows_in_memory(%__MODULE__{sort_by: nil} = grid), do: grid
+
+  def sort_rows_in_memory(%__MODULE__{sort_by: {col_name, dir}, columns: cols, rows: rows} = grid) do
+    case Enum.find_index(cols, &(&1 == col_name)) do
+      nil ->
+        grid
+
+      col_idx ->
+        sorted =
+          Enum.sort_by(
+            rows,
+            fn row ->
+              val = Enum.at(row, col_idx)
+              if is_nil(val), do: {1, ""}, else: {0, sortable_value(val)}
+            end,
+            if(dir == :asc, do: :asc, else: :desc)
+          )
+
+        %{grid | rows: sorted, rows_tuple: List.to_tuple(sorted), scroll_offset: 0, selected_cell: {0, elem(grid.selected_cell, 1)}}
+    end
+  end
+
+  defp sortable_value(v) when is_number(v), do: v
+  defp sortable_value(v) when is_binary(v), do: String.downcase(v)
+  defp sortable_value(v), do: Strata.Formatter.sanitize_cell(v)
+
+  @doc """
+  Stages an edited cell value into `pending_edits` or updates a staged insert row.
+  """
+  @spec stage_cell_edit(t(), non_neg_integer(), non_neg_integer(), term()) :: t()
+  def stage_cell_edit(%__MODULE__{} = grid, r_idx, c_idx, new_value) do
+    base_len = length(grid.rows)
+
+    if r_idx >= base_len do
+      ins_idx = r_idx - base_len
+
+      updated_inserts =
+        List.update_at(grid.pending_inserts, ins_idx, fn row ->
+          List.replace_at(row, c_idx, new_value)
+        end)
+
+      %{grid | pending_inserts: updated_inserts, editing_cell: nil}
+    else
+      orig_value = grid.rows |> Enum.at(r_idx, []) |> Enum.at(c_idx)
+
+      pending_edits =
+        if new_value == orig_value do
+          Map.delete(grid.pending_edits, {r_idx, c_idx})
+        else
+          Map.put(grid.pending_edits, {r_idx, c_idx}, %{orig: orig_value, new: new_value})
+        end
+
+      %{grid | pending_edits: pending_edits, editing_cell: nil}
+    end
+  end
+
+  @doc """
+  Appends a blank staged insert row and moves selection to its first cell.
+  """
+  @spec insert_blank_row(t()) :: t()
+  def insert_blank_row(%__MODULE__{columns: cols, pending_inserts: inserts} = grid) do
+    blank_row = List.duplicate(nil, max(1, length(cols)))
+    new_r_idx = length(grid.rows) + length(inserts)
+
+    %{
+      grid
+      | pending_inserts: inserts ++ [blank_row],
+        total_rows: length(grid.rows) + length(inserts) + 1,
+        mode: :selecting,
+        selected_cell: {new_r_idx, 0}
+    }
+  end
+
+  @doc """
+  Toggles deletion mark on `r_idx` (or discards an unsaved inserted row).
+  """
+  @spec toggle_delete_row(t(), non_neg_integer()) :: t()
+  def toggle_delete_row(%__MODULE__{} = grid, r_idx) do
+    base_len = length(grid.rows)
+
+    if r_idx >= base_len do
+      ins_idx = r_idx - base_len
+      updated_inserts = List.delete_at(grid.pending_inserts, ins_idx)
+      new_total = base_len + length(updated_inserts)
+      new_r = min(max(0, new_total - 1), r_idx)
+
+      %{
+        grid
+        | pending_inserts: updated_inserts,
+          total_rows: new_total,
+          selected_cell: {new_r, elem(grid.selected_cell, 1)}
+      }
+    else
+      deletes =
+        if MapSet.member?(grid.pending_deletes, r_idx) do
+          MapSet.delete(grid.pending_deletes, r_idx)
+        else
+          MapSet.put(grid.pending_deletes, r_idx)
+        end
+
+      %{grid | pending_deletes: deletes}
+    end
+  end
+
+  @doc """
+  Discards all staged edits, inserts, and deletes.
+  """
+  @spec revert_staged_changes(t()) :: t()
+  def revert_staged_changes(%__MODULE__{rows: rows} = grid) do
+    %{
+      grid
+      | pending_edits: %{},
+        pending_inserts: [],
+        pending_deletes: MapSet.new(),
+        editing_cell: nil,
+        total_rows: length(rows),
+        selected_cell: {min(max(0, length(rows) - 1), elem(grid.selected_cell, 0)), elem(grid.selected_cell, 1)}
     }
   end
 
@@ -87,8 +457,9 @@ defmodule Strata.UI.Components.DataGrid do
     %{
       grid
       | rows: updated_rows,
+        rows_tuple: List.to_tuple(updated_rows),
         cached_static_widths: static_w,
-        total_rows: length(updated_rows),
+        total_rows: length(updated_rows) + length(grid.pending_inserts),
         has_more: has_more,
         loading_more: false
     }
@@ -203,7 +574,8 @@ defmodule Strata.UI.Components.DataGrid do
           {r, curr_scroll}
       end
 
-    max_col_off = max_col_offset(grid.columns, grid.rows, max_width)
+    all_w = static_widths(grid)
+    max_col_off = max_col_offset(all_w, max_width)
 
     {new_col_scroll, new_c} =
       case direction do
@@ -221,7 +593,7 @@ defmodule Strata.UI.Components.DataGrid do
         :right ->
           if grid.mode == :browsing do
             # Ensure at least 1 new column appears on the right
-            current_widths = column_widths(grid.columns, grid.rows, max_width, curr_col_scroll)
+            current_widths = column_widths(all_w, max_width, curr_col_scroll)
             current_last_visible = curr_col_scroll + length(current_widths) - 1
 
             ns =
@@ -229,7 +601,7 @@ defmodule Strata.UI.Components.DataGrid do
                 curr_col_scroll
               else
                 Enum.reduce_while((curr_col_scroll + 1)..max_col_off, curr_col_scroll + 1, fn test_off, _acc ->
-                  test_widths = column_widths(grid.columns, grid.rows, max_width, test_off)
+                  test_widths = column_widths(all_w, max_width, test_off)
                   test_last = test_off + length(test_widths) - 1
 
                   if test_last > current_last_visible do
@@ -245,7 +617,7 @@ defmodule Strata.UI.Components.DataGrid do
             {ns, nc}
           else
             nc = min(max(0, col_count - 1), c + 1)
-            widths = column_widths(grid.columns, grid.rows, max_width, curr_col_scroll)
+            widths = column_widths(all_w, max_width, curr_col_scroll)
             visible_count = length(widths)
 
             ns =
@@ -254,7 +626,7 @@ defmodule Strata.UI.Components.DataGrid do
                   curr_col_scroll
                 else
                   Enum.reduce_while((curr_col_scroll + 1)..max_col_off, max_col_off, fn test_off, _acc ->
-                    test_widths = column_widths(grid.columns, grid.rows, max_width, test_off)
+                    test_widths = column_widths(all_w, max_width, test_off)
                     test_count = length(test_widths)
 
                     if nc < test_off + test_count do
@@ -286,13 +658,103 @@ defmodule Strata.UI.Components.DataGrid do
   end
 
   @doc """
-  Sets page index, clamping to valid page range.
+  Scrolls the DataGrid viewport directly (for mouse wheel / trackpad scrolling),
+  ensuring the table scrolls immediately in both `:browsing` and `:selecting` modes.
+  In `:selecting` mode, `selected_cell` stays clamped within the visible viewport.
+  """
+  @spec scroll_viewport(t(), atom(), pos_integer(), keyword()) :: t()
+  def scroll_viewport(%__MODULE__{} = grid, direction, viewport_h \\ 20, opts \\ []) do
+    max_width = Keyword.get(opts, :max_width, 999_999)
+    step = Keyword.get(opts, :step, 3)
+    row_count = if grid.total_rows > 0, do: grid.total_rows, else: length(grid.rows)
+    col_count = length(grid.columns)
+
+    max_top = max(0, row_count - max(1, viewport_h))
+    max_row = max(0, row_count - 1)
+    {r, c} = grid.selected_cell
+    curr_scroll = grid.scroll_offset || 0
+    curr_col_scroll = grid.col_offset || 0
+
+    all_w = static_widths(grid)
+    max_col_off = max_col_offset(all_w, max_width)
+
+    {new_scroll, new_r} =
+      case direction do
+        :up ->
+          ns = max(0, curr_scroll - step)
+
+          nr =
+            if grid.mode == :selecting do
+              min(max_row, min(ns + viewport_h - 1, max(ns, r)))
+            else
+              max(0, r - step)
+            end
+
+          {ns, nr}
+
+        :down ->
+          ns = min(max_top, curr_scroll + step)
+
+          nr =
+            if grid.mode == :selecting do
+              max(ns, min(max_row, r))
+            else
+              min(max_row, r + step)
+            end
+
+          {ns, nr}
+
+        _ ->
+          {curr_scroll, r}
+      end
+
+    {new_col_scroll, new_c} =
+      case direction do
+        :left ->
+          ns = max(0, curr_col_scroll - 1)
+          vis_count = length(column_widths(all_w, max_width, ns))
+
+          nc =
+            if grid.mode == :selecting do
+              max(ns, min(ns + max(0, vis_count - 1), c))
+            else
+              max(0, c - 1)
+            end
+
+          {ns, nc}
+
+        :right ->
+          ns = min(max_col_off, curr_col_scroll + 1)
+          vis_count = length(column_widths(all_w, max_width, ns))
+
+          nc =
+            if grid.mode == :selecting do
+              max(ns, min(max(0, col_count - 1), min(ns + max(0, vis_count - 1), c)))
+            else
+              min(max(0, col_count - 1), c + 1)
+            end
+
+          {ns, nc}
+
+        _ ->
+          {curr_col_scroll, c}
+      end
+
+    %{grid | selected_cell: {new_r, new_c}, scroll_offset: new_scroll, col_offset: new_col_scroll}
+  end
+
+  @doc """
+  Sets page index, clamping to valid page range, and syncs `scroll_offset` + `selected_cell`
+  so pagination visibly updates the DataGrid viewport.
   """
   @spec set_page(t(), integer()) :: t()
   def set_page(%__MODULE__{} = grid, page) do
     tot = total_pages(grid)
     clamped_page = max(1, min(tot, page))
-    %{grid | page: clamped_page, selected_cell: {0, elem(grid.selected_cell, 1)}}
+    new_scroll = (clamped_page - 1) * grid.page_size
+    max_row = max(0, length(grid.rows) - 1)
+    target_row = min(max_row, new_scroll)
+    %{grid | page: clamped_page, scroll_offset: new_scroll, selected_cell: {target_row, elem(grid.selected_cell, 1)}}
   end
 
   @doc """
@@ -329,17 +791,42 @@ defmodule Strata.UI.Components.DataGrid do
     vh = Keyword.get(opts, :viewport_h, 20)
 
     case key do
-      k when k in ["v", "V", "s", "S", :enter, :space] ->
+      k when k in ["v", "V", :enter, :space] ->
         updated_grid = %{grid | mode: :selecting}
 
         app =
           Map.put(
             app,
             :status_message,
-            "SELECT MODE: Use ↑/↓/←/→ to select cells, [c] copy, [v/Esc] exit to Browsing"
+            "SELECT MODE: ↑/↓/←/→ move · [e] edit · [i] insert · [d] delete · [c] copy · [Esc] exit"
           )
 
         {app, updated_grid}
+
+      k when k in ["s", "S", :f3] ->
+        new_app = Strata.UI.App.toggle_structure_view(app)
+        {new_app, new_app.datagrid_state || grid}
+
+      k when k in ["o", "O"] ->
+        new_app = Strata.UI.App.open_sort_picker(app)
+        {new_app, new_app.datagrid_state || grid}
+
+      "i" ->
+        updated_grid =
+          if grid.view_mode == :data do
+            insert_blank_row(grid)
+          else
+            grid
+          end
+
+        {app, updated_grid}
+
+      {:ctrl, "z"} ->
+        {app, revert_staged_changes(grid)}
+
+      {:ctrl, "s"} ->
+        new_app = Strata.UI.App.commit_staged_changes(app)
+        {new_app, new_app.datagrid_state || grid}
 
       dir when dir in [:up, :down, :left, :right, :home, :end, :page_up, :page_down] ->
         updated_grid = move_selection(grid, dir, vh, opts)
@@ -357,13 +844,56 @@ defmodule Strata.UI.Components.DataGrid do
         updated_grid = move_selection(grid, dir, vh, opts)
         {app, updated_grid}
 
-      k when k in ["f", "F", "/", {:ctrl, "f"}] ->
-        app = Strata.UI.App.push_modal(app, %{type: :filter_modal, title: "Filter Data"})
-        {app, grid}
+      k when k in ["g"] ->
+        {app, move_selection(grid, :home, vh, opts)}
+
+      "G" ->
+        {app, move_selection(grid, :end, vh, opts)}
+
+      "F" ->
+        new_app = Strata.UI.App.filter_by_selected_cell(app)
+        {new_app, new_app.datagrid_state || grid}
+
+      k when k in ["f", "/", {:ctrl, "f"}] ->
+        mode_opts = if k == "/", do: [all_columns: true], else: []
+        new_app = Strata.UI.App.open_filter_bar(app, mode_opts)
+        {new_app, new_app.datagrid_state || grid}
+
+      {:ctrl, "l"} ->
+        new_app = Strata.UI.App.clear_table_filter(app)
+        {new_app, new_app.datagrid_state || grid}
+
+      k when k in ["I", :f4] ->
+        new_app = Strata.UI.App.toggle_inspector(app)
+        {new_app, new_app.datagrid_state || grid}
+
+      k when k in ["[", "]", "{", "}"] ->
+        {handle_inspector_scroll_key(app, k), grid}
+
+      "m" ->
+        if Map.get(app, :inspector_open, false) do
+          {Strata.UI.App.cycle_inspector_format(app), grid}
+        else
+          {app, grid}
+        end
+
+      :esc ->
+        new_app = Strata.UI.App.dismiss_grid_overlays(app)
+        {new_app, new_app.datagrid_state || grid}
 
       k when k in ["e", "E", {:ctrl, "e"}] ->
-        app = Strata.UI.App.push_modal(app, %{type: :export_modal, title: "Export Data"})
+        app = Strata.UI.App.push_modal(app, Strata.UI.Components.FilterExportModal.new(:export))
         {app, grid}
+
+      k when k in ["r", "R", :f5] ->
+        new_app = Strata.UI.App.refresh_active_table(app)
+        {new_app, new_app.datagrid_state || grid}
+
+      k when k in ["c", "C", "y", {:ctrl, "c"}] ->
+        copy_selected_cell(app, grid)
+
+      "Y" ->
+        copy_selected_row(app, grid)
 
       k when k in [:n, "n", "N", {:ctrl, "n"}] ->
         {app, next_page(grid)}
@@ -380,56 +910,82 @@ defmodule Strata.UI.Components.DataGrid do
     vh = Keyword.get(opts, :viewport_h, 20)
 
     case key do
-      k when k in [:esc, "v", "V"] ->
-        updated_grid = %{grid | mode: :browsing}
+      :esc ->
+        if Map.get(app, :inspector_open, false) do
+          {%{app | inspector_open: false, status_message: "Inspector closed — press [Esc] again to exit Select"}, grid}
+        else
+          exit_selecting_mode(app, grid)
+        end
 
-        app =
-          Map.put(
-            app,
-            :status_message,
-            "BROWSING MODE: Press [v] or [s] or click cell for Select Mode"
-          )
+      k when k in ["v", "V"] ->
+        exit_selecting_mode(app, grid)
 
-        {app, updated_grid}
+      k when k in ["s", "S", :f3] ->
+        new_app = Strata.UI.App.toggle_structure_view(app)
+        {new_app, new_app.datagrid_state || grid}
 
-      k when k in ["c", "C", "y", "Y", {:ctrl, "c"}] ->
-        {r, c} = grid.selected_cell
-        raw_cell = grid.rows |> Enum.at(r, []) |> Enum.at(c, nil)
-        col_name = Enum.at(grid.columns, c, "Cell")
-        val_str = Strata.Formatter.sanitize_cell(raw_cell)
+      k when k in ["o", "O"] ->
+        {_r, c} = grid.selected_cell
+        new_app = Strata.UI.App.sort_active_table_by_col(app, c)
+        {new_app, new_app.datagrid_state || grid}
 
-        app =
-          Strata.UI.App.push_modal(app, %{
-            type: :cell_detail_modal,
-            title: " 📋 COPIED CELL VALUE (#{col_name}) ",
-            content: "Copied value:\n\n#{val_str}\n\n[ Press Esc or Enter to close ]"
-          })
+      "e" ->
+        if grid.view_mode == :data and grid.columns != [] do
+          new_app = Strata.UI.App.start_inline_edit(app)
+          {new_app, new_app.datagrid_state || grid}
+        else
+          {app, grid}
+        end
 
-        {app, grid}
+      "i" ->
+        if grid.view_mode == :data and grid.columns != [] do
+          {app, insert_blank_row(grid)}
+        else
+          {app, grid}
+        end
+
+      k when k in ["d", :delete] ->
+        if grid.view_mode == :data and effective_rows(grid) != [] do
+          {r, _c} = grid.selected_cell
+          {app, toggle_delete_row(grid, r)}
+        else
+          {app, grid}
+        end
+
+      {:ctrl, "z"} ->
+        {app, revert_staged_changes(grid)}
+
+      {:ctrl, "s"} ->
+        new_app = Strata.UI.App.commit_staged_changes(app)
+        {new_app, new_app.datagrid_state || grid}
+
+      k when k in ["c", "C", "y", {:ctrl, "c"}] ->
+        copy_selected_cell(app, grid)
+
+      "Y" ->
+        copy_selected_row(app, grid)
 
       k when k in [:enter, :space] ->
-        {r, c} = grid.selected_cell
-        raw_cell = grid.rows |> Enum.at(r, []) |> Enum.at(c, nil)
-        col_name = Enum.at(grid.columns, c, "Cell")
-        formatted_detail = Strata.Formatter.format_cell_detail(raw_cell)
+        new_app = Strata.UI.App.open_inspector(app)
+        {new_app, new_app.datagrid_state || grid}
 
-        modal_content = """
-        Column: #{col_name}  │  Row: #{r + 1}
-        ──────────────────────────────────────────────────
-        #{formatted_detail}
+      k when k in ["I", :f4] ->
+        new_app = Strata.UI.App.toggle_inspector(app)
+        {new_app, new_app.datagrid_state || grid}
 
-        ──────────────────────────────────────────────────
-        [ Press Esc or Enter to close ]
-        """
+      k when k in ["[", "]", "{", "}"] ->
+        {handle_inspector_scroll_key(app, k), grid}
 
-        app =
-          Strata.UI.App.push_modal(app, %{
-            type: :cell_detail_modal,
-            title: " 🔍 CELL DETAIL INSPECTOR (#{col_name}) ",
-            content: modal_content
-          })
+      "m" ->
+        if Map.get(app, :inspector_open, false) do
+          {Strata.UI.App.cycle_inspector_format(app), grid}
+        else
+          {app, grid}
+        end
 
-        {app, grid}
+      {:ctrl, "l"} ->
+        new_app = Strata.UI.App.clear_table_filter(app)
+        {new_app, new_app.datagrid_state || grid}
 
       dir when dir in [:up, :down, :left, :right, :home, :end, :page_up, :page_down] ->
         updated_grid = move_selection(grid, dir, vh, opts)
@@ -447,13 +1003,34 @@ defmodule Strata.UI.Components.DataGrid do
         updated_grid = move_selection(grid, dir, vh, opts)
         {app, updated_grid}
 
-      k when k in ["f", "F", "/", {:ctrl, "f"}] ->
-        app = Strata.UI.App.push_modal(app, %{type: :filter_modal, title: "Filter Data"})
+      "g" ->
+        {app, move_selection(grid, :home, vh, opts)}
+
+      "G" ->
+        {app, move_selection(grid, :end, vh, opts)}
+
+      k when k in [:n, "n", "N", {:ctrl, "n"}] ->
+        {app, next_page(grid)}
+
+      k when k in [:p, "p", "P", {:ctrl, "p"}] ->
+        {app, prev_page(grid)}
+
+      "F" ->
+        new_app = Strata.UI.App.filter_by_selected_cell(app)
+        {new_app, new_app.datagrid_state || grid}
+
+      k when k in ["f", "/", {:ctrl, "f"}] ->
+        mode_opts = if k == "/", do: [all_columns: true], else: []
+        new_app = Strata.UI.App.open_filter_bar(app, mode_opts)
+        {new_app, new_app.datagrid_state || grid}
+
+      k when k in ["E", {:ctrl, "e"}] ->
+        app = Strata.UI.App.push_modal(app, Strata.UI.Components.FilterExportModal.new(:export))
         {app, grid}
 
-      k when k in ["e", "E", {:ctrl, "e"}] ->
-        app = Strata.UI.App.push_modal(app, %{type: :export_modal, title: "Export Data"})
-        {app, grid}
+      k when k in ["r", "R", :f5] ->
+        new_app = Strata.UI.App.refresh_active_table(app)
+        {new_app, new_app.datagrid_state || grid}
 
       _ ->
         {app, grid}
@@ -461,6 +1038,89 @@ defmodule Strata.UI.Components.DataGrid do
   end
 
   def handle_key(app, grid, _key, _opts), do: {app, grid}
+
+  defp handle_inspector_scroll_key(%{inspector_open: true} = app, key) do
+    case key do
+      "[" -> Strata.UI.App.scroll_inspector(app, :value, -2)
+      "]" -> Strata.UI.App.scroll_inspector(app, :value, 2)
+      "{" -> Strata.UI.App.scroll_inspector(app, :summary, -2)
+      "}" -> Strata.UI.App.scroll_inspector(app, :summary, 2)
+      _ -> app
+    end
+  end
+
+  defp handle_inspector_scroll_key(app, _key), do: app
+
+  defp exit_selecting_mode(app, grid) do
+    app =
+      Map.put(
+        app,
+        :status_message,
+        "BROWSING MODE: Press [v] or click cell for Select Mode · [?] Actions"
+      )
+
+    {app, %{grid | mode: :browsing}}
+  end
+
+  defp copy_selected_cell(app, grid) do
+    eff = effective_rows(grid)
+
+    if eff == [] do
+      {Map.put(app, :status_message, "📋 No data to copy"), grid}
+    else
+      {r, c} = grid.selected_cell
+      raw_cell = eff |> Enum.at(r, []) |> Enum.at(c, nil)
+      col_name = Enum.at(grid.columns, c, "Cell")
+      copy_str = format_cell_for_copy(raw_cell)
+      preview_str = Strata.Formatter.sanitize_cell(raw_cell)
+
+      status =
+        case Strata.Clipboard.copy(copy_str) do
+          :ok ->
+            preview =
+              if String.length(preview_str) > 36,
+                do: String.slice(preview_str, 0, 33) <> "...",
+                else: preview_str
+
+            "📋 Copied #{col_name}: #{preview}"
+
+          {:error, _reason} ->
+            "📋 Copy failed (no OS clipboard tool) — press Enter to inspect"
+        end
+
+      {Map.put(app, :status_message, status), grid}
+    end
+  end
+
+  defp copy_selected_row(app, grid) do
+    eff = effective_rows(grid)
+
+    if eff == [] do
+      {Map.put(app, :status_message, "📋 No row to copy"), grid}
+    else
+      {r, _c} = grid.selected_cell
+      row_vals = eff |> Enum.at(r, [])
+      row_str = Enum.map_join(row_vals, "\t", &format_cell_for_copy/1)
+
+      status =
+        case Strata.Clipboard.copy(row_str) do
+          :ok -> "📋 Copied row #{r + 1} (#{length(row_vals)} cols) to clipboard"
+          {:error, _reason} -> "📋 Copy row failed (no OS clipboard tool)"
+        end
+
+      {Map.put(app, :status_message, status), grid}
+    end
+  end
+
+  @doc """
+  Formats a grid cell value for clipboard copy, preserving valid newlines while
+  sanitizing binary/non-printable data.
+  """
+  def format_cell_for_copy(val) when is_binary(val) do
+    if String.printable?(val), do: val, else: Strata.Formatter.sanitize_cell(val)
+  end
+
+  def format_cell_for_copy(val), do: Strata.Formatter.sanitize_cell(val)
   @doc """
   Computes or returns cached static width for every column.
   """

@@ -43,4 +43,46 @@ defmodule Strata.ConfigStoreTest do
     assert db_jump.username == "ec2-user"
     assert db_jump.port == 22
   end
+
+  test "persists SSH profiles and ConfigStore profiles across restarts and guards option atoms" do
+    tmp_dir = Path.join(System.tmp_dir!(), "strata_store_test_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+    cfg_path = Path.join(tmp_dir, "config.db")
+    json_path = Path.join(tmp_dir, "profiles.json")
+    ssh_path = Path.join(tmp_dir, "ssh.db")
+
+    store_name = :"test_cfg_store_#{System.unique_integer([:positive])}"
+    ssh_store_name = :"test_ssh_store_#{System.unique_integer([:positive])}"
+
+    {:ok, cfg_pid} = ConfigStore.start_link(name: store_name, config_path: cfg_path, json_path: json_path)
+    {:ok, ssh_pid} = SSHProfileStore.start_link(name: ssh_store_name, config_path: ssh_path)
+
+    ssh_prof = %SSHProfile{id: "ssh_persist", name: "Bastion", host: "10.0.0.2", port: 22, username: "ops"}
+    conn_prof = %ConnectionProfile{id: "conn_persist", name: "DB", driver: :sqlite, database: ":memory:", ssh_profile_id: "ssh_persist"}
+
+    assert :ok = SSHProfileStore.put_profile(ssh_store_name, ssh_prof)
+    assert :ok = ConfigStore.put_profile(store_name, conn_prof)
+
+    GenServer.stop(cfg_pid)
+    GenServer.stop(ssh_pid)
+
+    # Restart and verify ETS files reload persisted state
+    store_name_2 = :"test_cfg_store_reload_#{System.unique_integer([:positive])}"
+    ssh_store_name_2 = :"test_ssh_store_reload_#{System.unique_integer([:positive])}"
+
+    {:ok, cfg_pid2} = ConfigStore.start_link(name: store_name_2, config_path: cfg_path, json_path: json_path)
+    {:ok, ssh_pid2} = SSHProfileStore.start_link(name: ssh_store_name_2, config_path: ssh_path)
+
+    assert ConfigStore.get_profile(store_name_2, "conn_persist") == conn_prof
+    assert SSHProfileStore.get_profile(ssh_store_name_2, "ssh_persist") == ssh_prof
+
+    # Unknown option keys are ignored instead of leaking atoms
+    parsed = ConfigStore.profile_from_map(%{"id" => "x", "driver" => "postgres", "options" => %{"ssl" => true, "arbitrary_evil_key_xyz" => 1}})
+    assert parsed.options == %{ssl: true}
+
+    GenServer.stop(cfg_pid2)
+    GenServer.stop(ssh_pid2)
+  end
 end

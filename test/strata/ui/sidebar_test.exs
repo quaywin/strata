@@ -104,14 +104,21 @@ defmodule Strata.UI.Components.SidebarTest do
       assert app_leaf_focused.focus == :datagrid
     end
 
-    test "pressing enter on table node loads table data and switches to Table View", %{app: app} do
+    test "pressing enter on table node loads table data, auto-focuses datagrid, and switches to Table View", %{app: app} do
       app = Map.put(app, :selected_tree_node_id, "conn_pg_public_users")
       app = Sidebar.handle_key(app, :enter)
 
       assert app.active_view == :table_view
+      assert app.focus == :datagrid
       assert app.selected_table == "users"
       assert app.datagrid_state != nil
       assert is_list(app.datagrid_state.columns)
+    end
+
+    test "qualify_table quotes schema and table per driver" do
+      assert Sidebar.qualify_table(:postgres, "users", "analytics") == ~s("analytics"."users")
+      assert Sidebar.qualify_table(:mysql, "users", "mydb") == "`users`"
+      assert Sidebar.qualify_table(:sqlite, "users", "main") == ~s("users")
     end
 
     test "collapses and expands all tree nodes with c and o keys", %{app: app} do
@@ -144,6 +151,39 @@ defmodule Strata.UI.Components.SidebarTest do
       assert rendered.area == area
       assert is_list(rendered.lines)
       assert length(rendered.lines) > 0
+    end
+
+    test "filters tree nodes with / and renders search title", %{app: app} do
+      filtered_app = %{app | sidebar_filter: "ord", sidebar_filter_active: true}
+      rendered = Sidebar.render(filtered_app, %{x: 0, y: 0, width: 30, height: 20})
+
+      assert rendered.title == "CONNECTIONS / 🔍 ord▌"
+      assert Enum.any?(rendered.lines, &String.contains?(&1, "orders"))
+      refute Enum.any?(rendered.lines, &String.contains?(&1, "users"))
+    end
+
+    test "uses compact single-column glyphs, child counts, active table star, and styled lines", %{app: app} do
+      active_app = %{app | selected_table: "users", connection_statuses: %{"conn_pg" => :connected}}
+      rendered = Sidebar.render(active_app, %{x: 0, y: 0, width: 30, height: 20})
+
+      assert Enum.any?(rendered.lines, &String.contains?(&1, "● Prod Postgres"))
+      assert Enum.any?(rendered.lines, &String.contains?(&1, "▾ public (2)"))
+      assert Enum.any?(rendered.lines, &String.contains?(&1, "▦ users ★"))
+      assert length(rendered.styled_items) == length(rendered.lines)
+    end
+
+    test "render_viewport slices and styles only visible items matching full render", %{app: app} do
+      scrolled_app = %{app | sidebar_scroll_offset: 1, selected_tree_node_id: "conn_pg_public_users"}
+      area = %{x: 0, y: 0, width: 30, height: 5}
+
+      full = Sidebar.render(scrolled_app, area)
+      vp = Sidebar.render_viewport(scrolled_app, area)
+
+      assert vp.viewport_h == 3
+      assert vp.clamped_offset == 1
+      assert vp.max_offset == length(full.styled_items) - 3
+      assert vp.selected_index == full.selected_index
+      assert vp.styled_items == Enum.slice(full.styled_items, 1, 3)
     end
   end
 end

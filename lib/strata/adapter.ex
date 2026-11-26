@@ -75,4 +75,20 @@ defmodule Strata.Adapter do
       _ -> 0
     end
   end
+
+  @doc """
+  Safely quotes a SQL identifier (table or schema name) for the given driver.
+  """
+  @spec quote_identifier(atom() | String.t(), String.t()) :: String.t()
+  def quote_identifier(driver, identifier) when is_binary(identifier) do
+    case normalize_driver(driver) do
+      :mysql ->
+        escaped = String.replace(identifier, "`", "``")
+        "`#{escaped}`"
+
+      _ ->
+        escaped = String.replace(identifier, "\"", "\"\"")
+        "\"#{escaped}\""
+    end
+  end
 end

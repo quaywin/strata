@@ -86,6 +86,16 @@ defmodule Strata.UI.Components.SSHModalTest do
       modal = SSHModal.handle_key(modal, :backspace)
       assert modal.host == "bastion.i"
     end
+
+    test "handles save and cancel buttons and ctrl+s shortcut" do
+      modal_save = %{SSHModal.new(host: "10.0.0.1") | focused_field: :save_button}
+      assert {:save, _} = SSHModal.handle_key(modal_save, :enter)
+
+      modal_cancel = %{SSHModal.new() | focused_field: :cancel_button}
+      assert {:cancel, _} = SSHModal.handle_key(modal_cancel, :enter)
+
+      assert {:save, _} = SSHModal.handle_key(SSHModal.new(), {:ctrl, "s"})
+    end
   end
 
   describe "test_ssh/2" do
@@ -118,6 +128,17 @@ defmodule Strata.UI.Components.SSHModalTest do
       assert rendered.title =~ "SSH PROFILE"
       assert is_list(rendered.fields)
       assert rendered.focused_field == :name
+    end
+
+    test "exposes delete button and saved profile selector when editing existing SSH profile" do
+      prof = %SSHProfile{id: "ssh_1", name: "Bastion", host: "10.0.0.1", port: 22, username: "ubuntu"}
+      modal = SSHModal.new(profile: prof, focused_field: :delete_button)
+      assert :delete_button in SSHModal.visible_fields(modal)
+      assert {:delete, ^modal} = SSHModal.handle_key(modal, :enter)
+
+      rendered = SSHModal.render(modal, %{width: 72, height: 22})
+      assert Enum.any?(rendered.fields, &(&1.key == :profile_selector))
+      assert Enum.any?(rendered.fields, &(&1.key == :delete_button))
     end
   end
 end

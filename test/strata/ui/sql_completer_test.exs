@@ -56,6 +56,31 @@ defmodule Strata.UI.Components.SQLCompleterTest do
       assert "users" in labels
     end
 
+    test "extracts tables even when parent connection or schema node is collapsed" do
+      nodes = [
+        %{
+          id: "conn_collapsed",
+          label: "Collapsed DB",
+          type: :connection,
+          expanded?: false,
+          children: [
+            %{
+              id: "schema_collapsed",
+              label: "public",
+              type: :schema,
+              expanded?: false,
+              children: [
+                %{id: "tbl_invoices", label: "invoices", type: :table, children: []}
+              ]
+            }
+          ]
+        }
+      ]
+
+      results = SQLCompleter.suggestions("inv", sidebar_nodes: nodes)
+      assert Enum.any?(results, &(&1.label == "invoices"))
+    end
+
     test "returns empty list when prefix is empty" do
       assert SQLCompleter.suggestions("") == []
     end

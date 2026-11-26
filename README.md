@@ -56,20 +56,23 @@ graph TD
 
 ### Running from Source (Development Mode)
 
-System requirements: **Elixir 1.15+** and **Erlang OTP 26+**.
+System requirements: **Elixir 1.18+** and **Erlang/OTP 28+** (or use [mise](https://mise.jdx.dev/) with `mise install`).
 
 ```bash
 # 1. Clone repository
 git clone https://github.com/quaywin/strata.git
 cd strata
 
-# 2. Install dependencies
+# 2. Install toolchain (Erlang, Elixir, Zig 0.16.0, Rust)
+mise install
+
+# 3. Install dependencies
 mix deps.get
 
-# 3. Compile project
+# 4. Compile project
 mix compile
 
-# 4. Launch TUI application
+# 5. Launch TUI application
 mix strata
 ```
 
@@ -81,16 +84,20 @@ mix test
 
 ### Standalone Binary Build (Production Release)
 
-Build a single self-contained executable binary using Burrito:
+Build a single self-contained executable binary using Burrito (requires `zig` 0.16.0 and `xz`):
 
 ```bash
-MIX_ENV=prod mix release
+# Build for your current host architecture
+MIX_ENV=prod mix release --overwrite
+
+# Build for a specific target (e.g. Linux x86_64 musl)
+TARGET_ARCH=x86_64 TARGET_OS=linux TARGET_ABI=musl BURRITO_TARGET=linux_x86_64 MIX_ENV=prod mix release --overwrite
 ```
 
-The compiled binaries will be output to `burrito_out/`:
+The compiled binary will be output to `burrito_out/`:
 - macOS (Apple Silicon): `burrito_out/strata_macos_aarch64`
 - macOS (Intel): `burrito_out/strata_macos_x86_64`
-- Linux (x86_64): `burrito_out/strata_linux_x86_64`
+- Linux (x86_64 musl): `burrito_out/strata_linux_x86_64`
 
 ---
 

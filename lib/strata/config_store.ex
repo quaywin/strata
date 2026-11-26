@@ -1,11 +1,22 @@
 defmodule Strata.ConfigStore do
   @moduledoc """
-  Storage backend that owns and manages configuration, synchronized with caudata (~/.strata/config.db).
+  Storage backend that owns and manages connection profiles in ETS (`read_concurrency: true`),
+  with debounced atomic persistence to `~/.strata/config.db` and `0o600` file permissions,
+  matching `Caudata.ConfigStore`.
   """
   use GenServer
   require Logger
 
   alias Strata.ConnectionProfile
+
+  @env Application.compile_env(:strata, :env, :prod)
+  @allowed_option_keys %{
+    "ssl" => :ssl,
+    "ssl_opts" => :ssl_opts,
+    "timeout" => :timeout,
+    "connect_timeout" => :connect_timeout,
+    "pool_size" => :pool_size
+  }
 
   # Client API
 
@@ -34,6 +45,8 @@ defmodule Strata.ConfigStore do
       [{_, p}] -> p
       [] -> nil
     end
+  rescue
+    _ -> nil
   end
 
   @spec put_profile(atom() | pid(), ConnectionProfile.t()) :: :ok
@@ -58,8 +71,10 @@ defmodule Strata.ConfigStore do
 
   @impl true
   def init(opts) do
+    Process.flag(:trap_exit, true)
     name = Keyword.get(opts, :name, __MODULE__)
     path = Keyword.get(opts, :config_path) || Strata.Config.config_path()
+    json_path = Keyword.get(opts, :json_path) || Strata.Config.json_config_path()
 
     tab =
       case :ets.info(name) do
@@ -70,23 +85,25 @@ defmodule Strata.ConfigStore do
           name
       end
 
-    load_config(tab, path)
+    load_config(tab, path, json_path)
 
-    {:ok, %{table: tab, config_path: path}}
+    {:ok, %{table: tab, config_path: path, json_path: json_path, save_timer: nil}}
   end
 
   @impl true
   def handle_call({:put_profile, %ConnectionProfile{id: id} = profile}, _from, state) do
     :ets.insert(state.table, {{:profile, id}, profile})
-    save_config(state)
-    {:reply, :ok, state}
+    new_state = save_async(state)
+    broadcast_profiles_updated(state.table)
+    {:reply, :ok, new_state}
   end
 
   @impl true
   def handle_call({:delete_profile, id}, _from, state) do
     :ets.delete(state.table, {:profile, id})
-    save_config(state)
-    {:reply, :ok, state}
+    new_state = save_async(state)
+    broadcast_profiles_updated(state.table)
+    {:reply, :ok, new_state}
   end
 
   @impl true
@@ -94,10 +111,43 @@ defmodule Strata.ConfigStore do
     {:reply, state.table, state}
   end
 
+  @impl true
+  def handle_info(:perform_save, state) do
+    do_perform_save(state)
+    {:noreply, %{state | save_timer: nil}}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    if state.save_timer do
+      Process.cancel_timer(state.save_timer)
+
+      receive do
+        :perform_save -> :ok
+      after
+        0 -> :ok
+      end
+
+      do_perform_save(state)
+    end
+
+    :ok
+  end
+
   defp get_table_name(store) when is_atom(store), do: store
   defp get_table_name(store) when is_pid(store), do: GenServer.call(store, :get_table_name)
 
-  defp load_config(tab, path) do
+  defp broadcast_profiles_updated(tab) do
+    if Process.whereis(Strata.PubSub) do
+      profiles =
+        :ets.match_object(tab, {{:profile, :_}, :_})
+        |> Enum.map(fn {_, p} -> p end)
+
+      Phoenix.PubSub.broadcast(Strata.PubSub, "config:profiles", {:profiles_updated, profiles})
+    end
+  end
+
+  defp load_config(tab, path, json_path) do
     char_path = String.to_charlist(path)
 
     if File.exists?(path) do
@@ -114,40 +164,14 @@ defmodule Strata.ConfigStore do
           :ets.delete(file_tab)
 
         {:error, _} ->
-          load_caudata_fallback(tab)
-          load_json_fallback(tab)
+          load_json_fallback(tab, json_path)
       end
     else
-      load_caudata_fallback(tab)
-      load_json_fallback(tab)
+      load_json_fallback(tab, json_path)
     end
   end
 
-  defp load_caudata_fallback(tab) do
-    caudata_path = Path.expand("~/.caudata/config.db")
-
-    if File.exists?(caudata_path) do
-      case :ets.file2tab(String.to_charlist(caudata_path)) do
-        {:ok, file_tab} ->
-          :ets.foldl(
-            fn element, _acc ->
-              :ets.insert(tab, element)
-            end,
-            :ok,
-            file_tab
-          )
-
-          :ets.delete(file_tab)
-
-        {:error, _} ->
-          :ok
-      end
-    end
-  end
-
-  defp load_json_fallback(tab) do
-    json_path = Path.expand("~/.config/strata/profiles.json")
-
+  defp load_json_fallback(tab, json_path) do
     if File.exists?(json_path) do
       case File.read(json_path) do
         {:ok, content} ->
@@ -168,11 +192,25 @@ defmodule Strata.ConfigStore do
     end
   end
 
-  defp save_config(state) do
+  defp save_async(state) do
+    if @env == :test do
+      do_perform_save(state)
+      state
+    else
+      if state.save_timer, do: Process.cancel_timer(state.save_timer)
+      timer = Process.send_after(self(), :perform_save, 200)
+      %{state | save_timer: timer}
+    end
+  end
+
+  defp do_perform_save(state) do
     path = state.config_path
     dir = Path.dirname(path)
     File.mkdir_p!(dir)
-    char_path = String.to_charlist(path)
+
+    if Path.basename(dir) == ".strata" do
+      _ = File.chmod(dir, 0o700)
+    end
 
     file_tab = :ets.new(:strata_config_file, [:set, :public])
 
@@ -184,16 +222,33 @@ defmodule Strata.ConfigStore do
       state.table
     )
 
-    :ets.tab2file(file_tab, char_path)
-    :ets.delete(file_tab)
+    tmp_path = "#{path}.tmp.#{System.unique_integer([:positive])}"
 
-    save_json_fallback(state.table)
+    try do
+      case :ets.tab2file(file_tab, String.to_charlist(tmp_path)) do
+        :ok ->
+          _ = File.chmod(tmp_path, 0o600)
+          File.rename!(tmp_path, path)
+          _ = File.chmod(path, 0o600)
+
+        {:error, reason} ->
+          Logger.error("Failed to persist config to disk at #{path}: #{inspect(reason)}")
+          File.rm(tmp_path)
+      end
+    rescue
+      e ->
+        Logger.error("Error persisting config: #{inspect(e)}")
+        File.rm(tmp_path)
+    after
+      :ets.delete(file_tab)
+    end
+
+    save_json_fallback(state.table, state.json_path)
   rescue
     _ -> :error
   end
 
-  defp save_json_fallback(tab) do
-    json_path = Path.expand("~/.config/strata/profiles.json")
+  defp save_json_fallback(tab, json_path) do
     dir = Path.dirname(json_path)
     File.mkdir_p!(dir)
 
@@ -202,10 +257,17 @@ defmodule Strata.ConfigStore do
       |> Enum.map(fn {_, p} -> p end)
 
     maps = Enum.map(profiles, &profile_to_map/1)
+    tmp_json = "#{json_path}.tmp.#{System.unique_integer([:positive])}"
 
     case Jason.encode(maps, pretty: true) do
-      {:ok, json} -> File.write(json_path, json)
-      _ -> :error
+      {:ok, json} ->
+        File.write!(tmp_json, json)
+        _ = File.chmod(tmp_json, 0o600)
+        File.rename!(tmp_json, json_path)
+        _ = File.chmod(json_path, 0o600)
+
+      _ ->
+        :error
     end
   rescue
     _ -> :error
@@ -259,6 +321,13 @@ defmodule Strata.ConfigStore do
   end
 
   defp symbolize_keys(map) when is_map(map) do
-    Map.new(map, fn {k, v} -> {String.to_atom(to_string(k)), v} end)
+    Enum.reduce(map, %{}, fn {k, v}, acc ->
+      key_str = to_string(k)
+
+      case Map.fetch(@allowed_option_keys, key_str) do
+        {:ok, atom_key} -> Map.put(acc, atom_key, v)
+        :error -> acc
+      end
+    end)
   end
 end

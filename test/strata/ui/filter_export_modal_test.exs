@@ -71,6 +71,17 @@ defmodule Strata.UI.Components.FilterExportModalTest do
       modal = FilterExportModal.handle_key(modal, :backspace)
       assert modal.where_clause == "id > 0 AND age >= 1"
     end
+
+    test "dispatches apply, export, and cancel actions on button activation" do
+      filter_apply = %{FilterExportModal.new_filter(where: "id = 1") | focused_field: :apply_button}
+      assert {:apply, {:filter, "id = 1", "", nil}, _} = FilterExportModal.handle_key(filter_apply, :enter)
+
+      export_btn = %{FilterExportModal.new_export(format: :json, file_path: "out.json") | focused_field: :export_button}
+      assert {:apply, {:export, :json, "out.json", :all}, _} = FilterExportModal.handle_key(export_btn, :enter)
+
+      cancel_btn = %{FilterExportModal.new_filter() | focused_field: :cancel_button}
+      assert {:cancel, _} = FilterExportModal.handle_key(cancel_btn, :enter)
+    end
   end
 
   describe "build_filter_sql/2" do
@@ -143,6 +154,43 @@ defmodule Strata.UI.Components.FilterExportModalTest do
       assert rendered.title =~ "EXPORT"
       assert rendered.mode == :export
       assert is_list(rendered.fields)
+    end
+  end
+
+  describe "cursor movement, clear shortcuts, and UX hints" do
+    test "supports cursor movement, mid-string edit/paste, delete, Ctrl+U, and Ctrl+L clear" do
+      modal = FilterExportModal.new_filter(where: "id = 10", columns: ["id", "name", "email"])
+      assert modal.cursor_pos == 7
+
+      # Move cursor left 2 chars (before "10") and insert ">= " -> "id = >= 10", delete "=" etc.
+      moved =
+        modal
+        |> FilterExportModal.handle_key(:left)
+        |> FilterExportModal.handle_key(:left)
+        |> FilterExportModal.handle_key("9")
+
+      assert moved.where_clause == "id = 910"
+      assert moved.cursor_pos == 6
+
+      after_del = FilterExportModal.handle_key(moved, :delete)
+      assert after_del.where_clause == "id = 90"
+
+      after_home = FilterExportModal.handle_key(after_del, :home)
+      assert after_home.cursor_pos == 0
+
+      after_clear_line = FilterExportModal.handle_key(after_home, {:ctrl, "u"})
+      assert after_clear_line.where_clause == ""
+      assert after_clear_line.cursor_pos == 0
+
+      rendered = FilterExportModal.render(moved, %{width: 74, height: 18})
+      assert hd(rendered.fields).value == "id = 9▏10"
+      assert rendered.status_message =~ "Columns: id, name, email"
+
+      # Clear button or Ctrl+L returns empty filter payload
+      clear_btn = %{moved | focused_field: :clear_button}
+      assert {:apply, {:filter, "", "", nil}, cleared} = FilterExportModal.handle_key(clear_btn, :enter)
+      assert cleared.where_clause == ""
+      assert {:apply, {:filter, "", "", nil}, _} = FilterExportModal.handle_key(moved, {:ctrl, "l"})
     end
   end
 end

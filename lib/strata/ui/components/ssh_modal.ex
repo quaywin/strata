@@ -9,6 +9,7 @@ defmodule Strata.UI.Components.SSHModal do
 
   @auth_types [:password, :private_key]
   @fields [
+    :profile_selector,
     :name,
     :host,
     :port,
@@ -19,8 +20,15 @@ defmodule Strata.UI.Components.SSHModal do
     :passphrase,
     :test_button,
     :save_button,
+    :delete_button,
     :cancel_button
   ]
+
+  @doc """
+  Returns the visible ordered fields for SSHModal. `:delete_button` is shown when editing a saved profile.
+  """
+  def visible_fields(%__MODULE__{id: id}) when is_binary(id) and id != "", do: @fields
+  def visible_fields(_modal), do: List.delete(@fields, :delete_button)
 
   defstruct [
     :id,
@@ -101,12 +109,12 @@ defmodule Strata.UI.Components.SSHModal do
   Handles key events for navigation, auth_type toggle, and field editing.
   """
   def handle_key(%__MODULE__{} = modal, :tab) do
-    next_field = get_next_field(modal.focused_field, 1)
+    next_field = get_next_field(modal, modal.focused_field, 1)
     %{modal | focused_field: next_field}
   end
 
   def handle_key(%__MODULE__{} = modal, :shift_tab) do
-    prev_field = get_next_field(modal.focused_field, -1)
+    prev_field = get_next_field(modal, modal.focused_field, -1)
     %{modal | focused_field: prev_field}
   end
 
@@ -118,11 +126,65 @@ defmodule Strata.UI.Components.SSHModal do
     handle_key(modal, :shift_tab)
   end
 
+  # Saved SSH profile selector cycling
+  def handle_key(%__MODULE__{focused_field: :profile_selector} = modal, key)
+      when key in [:right, :left, :space, :enter] do
+    profiles =
+      try do
+        Strata.SSHProfileStore.list_profiles()
+      catch
+        _, _ -> []
+      end
+
+    options = [nil | profiles]
+    idx = Enum.find_index(options, fn p -> (p && p.id) == modal.id end) || 0
+    delta = if key == :left, do: -1, else: 1
+    chosen = Enum.at(options, rem(idx + delta + length(options), length(options)))
+
+    case chosen do
+      nil ->
+        %{new() | focused_field: :profile_selector}
+
+      prof ->
+        %{new(profile: prof) | focused_field: :profile_selector}
+    end
+  end
+
   # Auth type cycling
   def handle_key(%__MODULE__{focused_field: :auth_type} = modal, key)
       when key in [:space, :enter, :right, :left] do
     next_type = if modal.auth_type == :password, do: :private_key, else: :password
     %{modal | auth_type: next_type}
+  end
+
+  # Save shortcut & buttons
+  def handle_key(%__MODULE__{} = modal, key) when key in [{:ctrl, "s"}, {:ctrl, "S"}] do
+    {:save, modal}
+  end
+
+  def handle_key(%__MODULE__{focused_field: :test_button} = modal, key)
+      when key in [:enter, :space] do
+    test_ssh(modal)
+  end
+
+  def handle_key(%__MODULE__{focused_field: :save_button} = modal, key)
+      when key in [:enter, :space] do
+    {:save, modal}
+  end
+
+  def handle_key(%__MODULE__{focused_field: :delete_button, id: id} = modal, key)
+      when is_binary(id) and key in [:enter, :space] do
+    {:delete, modal}
+  end
+
+  def handle_key(%__MODULE__{focused_field: :cancel_button} = modal, key)
+      when key in [:enter, :space] do
+    {:cancel, modal}
+  end
+
+  def handle_key(%__MODULE__{focused_field: field} = modal, :enter)
+      when field in [:name, :host, :port, :username, :password, :identity_file, :passphrase] do
+    handle_key(modal, :tab)
   end
 
   # Backspace handling
@@ -202,7 +264,13 @@ defmodule Strata.UI.Components.SSHModal do
   Renders structured map representation of the modal for TUI rendering.
   """
   def render(%__MODULE__{} = modal, area) do
-    fields = [
+    selector_label =
+      if is_binary(modal.id) and modal.id != "",
+        do: "#{modal.name} (Editing · ←/→ to switch)",
+        else: "(New SSH Profile · ←/→ to edit saved)"
+
+    base_fields = [
+      %{label: "Saved Profile", key: :profile_selector, value: selector_label, type: :select},
       %{label: "Name", key: :name, value: modal.name, type: :text},
       %{label: "Host", key: :host, value: modal.host, type: :text},
       %{label: "Port", key: :port, value: Integer.to_string(modal.port), type: :text},
@@ -212,9 +280,15 @@ defmodule Strata.UI.Components.SSHModal do
       %{label: "Private Key Path", key: :identity_file, value: modal.identity_file, type: :text},
       %{label: "Passphrase", key: :passphrase, value: String.duplicate("*", String.length(modal.passphrase)), type: :password},
       %{label: "[⚡ Test SSH]", key: :test_button, type: :button},
-      %{label: "[ Save ]", key: :save_button, type: :button},
-      %{label: "[ Cancel ]", key: :cancel_button, type: :button}
+      %{label: "[ Save (Ctrl+S) ]", key: :save_button, type: :button}
     ]
+
+    delete_field =
+      if is_binary(modal.id) and modal.id != "",
+        do: [%{label: "[🗑 Delete SSH]", key: :delete_button, type: :button}],
+        else: []
+
+    fields = base_fields ++ delete_field ++ [%{label: "[ Cancel (Esc) ]", key: :cancel_button, type: :button}]
 
     %{
       title: "SSH PROFILE SETUP",
@@ -226,9 +300,10 @@ defmodule Strata.UI.Components.SSHModal do
     }
   end
 
-  defp get_next_field(current, delta) do
-    idx = Enum.find_index(@fields, &(&1 == current)) || 0
-    cnt = length(@fields)
-    Enum.at(@fields, rem(idx + delta + cnt, cnt))
+  defp get_next_field(modal, current, delta) do
+    fields = visible_fields(modal)
+    idx = Enum.find_index(fields, &(&1 == current)) || 0
+    cnt = length(fields)
+    Enum.at(fields, rem(idx + delta + cnt, cnt))
   end
 end

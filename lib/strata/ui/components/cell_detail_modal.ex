@@ -99,7 +99,10 @@ defmodule Strata.UI.Components.CellDetailModal do
   """
   def render(%__MODULE__{} = modal, area) do
     all_lines = String.split(modal.formatted_value, "\n")
-    visible_lines = Enum.drop(all_lines, modal.scroll_offset)
+    inner_h = max(1, Map.get(area, :height, 20) - 4)
+    max_scroll = max(0, length(all_lines) - inner_h)
+    clamped_scroll = min(modal.scroll_offset, max_scroll)
+    visible_lines = all_lines |> Enum.drop(clamped_scroll) |> Enum.take(inner_h)
 
     title =
       if modal.column do
@@ -109,7 +112,7 @@ defmodule Strata.UI.Components.CellDetailModal do
       end
 
     content_str = Enum.join(visible_lines, "\n")
-    status_hint = "\n───── [ Format: #{modal.format} | Enter/Esc: Close | ↑/↓: Scroll ] ─────"
+    status_hint = "\n───── [ Format: #{modal.format} (f) | Wrap: #{modal.wrap_lines} (w) | c: Copy | ↑/↓: Scroll | Esc: Close ] ─────"
 
     %{
       title: title,
@@ -121,16 +124,12 @@ defmodule Strata.UI.Components.CellDetailModal do
       content: content_str <> status_hint,
       lines: visible_lines,
       total_lines: length(all_lines),
-      scroll_offset: modal.scroll_offset,
+      scroll_offset: clamped_scroll,
       wrap_lines: modal.wrap_lines
     }
   end
 
   defp analyze_and_format(nil), do: {:nil, :text, "<NULL>"}
-
-  defp analyze_and_format(<<_::128>> = uuid_bin) do
-    {:uuid, :text, Strata.Formatter.format_uuid(uuid_bin)}
-  end
 
   defp analyze_and_format(value) when is_map(value) or is_list(value) do
     case Jason.encode(value, pretty: true) do
@@ -140,28 +139,21 @@ defmodule Strata.UI.Components.CellDetailModal do
   end
 
   defp analyze_and_format(value) when is_binary(value) do
-    trimmed = String.trim(value)
+    case Strata.Formatter.decode_json_pretty(value) do
+      {:ok, json_str} ->
+        {:json, :json, json_str}
 
-    cond do
-      (String.starts_with?(trimmed, "{") and String.ends_with?(trimmed, "}")) or
-          (String.starts_with?(trimmed, "[") and String.ends_with?(trimmed, "]")) ->
-        case Jason.decode(trimmed) do
-          {:ok, parsed} when is_map(parsed) or is_list(parsed) ->
-            {:json, :json, Jason.encode!(parsed, pretty: true)}
+      :error ->
+        cond do
+          String.printable?(value) ->
+            {:text, :text, value}
 
-          _ ->
-            if String.printable?(value) do
-              {:text, :text, value}
-            else
-              {:binary, :raw, Strata.Formatter.format_cell_detail(value)}
-            end
+          byte_size(value) == 16 ->
+            {:uuid, :text, Strata.Formatter.format_uuid(value)}
+
+          true ->
+            {:binary, :raw, Strata.Formatter.format_cell_detail(value)}
         end
-
-      String.printable?(value) ->
-        {:text, :text, value}
-
-      true ->
-        {:binary, :raw, Strata.Formatter.format_cell_detail(value)}
     end
   end
 

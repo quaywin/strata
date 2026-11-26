@@ -12,6 +12,15 @@ defmodule Strata.UI.Components.SQLEditor do
     BOOLEAN INTEGER VARCHAR TEXT TIMESTAMP DATE
   ))
 
+  @multiline_comment_re ~r|\A/\*.*?\*/|s
+  @single_quote_re ~r/\A'(?:[^'\\]|\\.)*'/
+  @double_quote_re ~r/\A"(?:[^"\\]|\\.)*"/
+  @number_re ~r/^\d+(\.\d+)?/
+  @ws_re ~r/^\s+/
+  @ident_re ~r/^[a-zA-Z_][a-zA-Z0-9_]*/
+  @op_re ~r/^(<=|>=|<>|!=|=|<|>|\+|\-|\*|\/)/
+  @punct_re ~r/^(,|\(|\)|;)/
+
   @type cursor :: {non_neg_integer(), non_neg_integer()}
   @type token :: %{type: atom(), text: String.t()}
 
@@ -34,7 +43,7 @@ defmodule Strata.UI.Components.SQLEditor do
 
       # Multi-line comments (/* ... */)
       String.starts_with?(sql, "/*") ->
-        case Regex.run(~r|\A/\*.*?\*/|s, sql) do
+        case Regex.run(@multiline_comment_re, sql) do
           [matched] ->
             rest = String.slice(sql, String.length(matched)..-1//1)
             do_tokenize(rest, [%{type: :comment, text: matched} | acc])
@@ -45,11 +54,19 @@ defmodule Strata.UI.Components.SQLEditor do
         end
 
       # Strings ('...' or "...")
-      String.starts_with?(sql, "'") or String.starts_with?(sql, "\"") ->
-        quote_char = String.first(sql)
-        pattern = Regex.compile!("\\A#{quote_char}(?:[^#{quote_char}\\\\]|\\\\.)*#{quote_char}")
+      String.starts_with?(sql, "'") ->
+        case Regex.run(@single_quote_re, sql) do
+          [matched] ->
+            rest = String.slice(sql, String.length(matched)..-1//1)
+            do_tokenize(rest, [%{type: :string, text: matched} | acc])
 
-        case Regex.run(pattern, sql) do
+          nil ->
+            {str, rest} = split_at_newline(sql)
+            do_tokenize(rest, [%{type: :string, text: str} | acc])
+        end
+
+      String.starts_with?(sql, "\"") ->
+        case Regex.run(@double_quote_re, sql) do
           [matched] ->
             rest = String.slice(sql, String.length(matched)..-1//1)
             do_tokenize(rest, [%{type: :string, text: matched} | acc])
@@ -60,32 +77,32 @@ defmodule Strata.UI.Components.SQLEditor do
         end
 
       # Numbers (\d+(\.\d+)?)
-      matched = Regex.run(~r/^\d+(\.\d+)?/, sql) ->
+      matched = Regex.run(@number_re, sql) ->
         [num | _] = matched
         rest = String.slice(sql, String.length(num)..-1//1)
         do_tokenize(rest, [%{type: :number, text: num} | acc])
 
       # Whitespace
-      matched = Regex.run(~r/^\s+/, sql) ->
+      matched = Regex.run(@ws_re, sql) ->
         [ws | _] = matched
         rest = String.slice(sql, String.length(ws)..-1//1)
         do_tokenize(rest, [%{type: :whitespace, text: ws} | acc])
 
       # Identifiers / Words
-      matched = Regex.run(~r/^[a-zA-Z_][a-zA-Z0-9_]*/, sql) ->
+      matched = Regex.run(@ident_re, sql) ->
         [word | _] = matched
         rest = String.slice(sql, String.length(word)..-1//1)
         type = if MapSet.member?(@keywords, String.upcase(word)), do: :keyword, else: :identifier
         do_tokenize(rest, [%{type: type, text: word} | acc])
 
       # Operators
-      matched = Regex.run(~r/^(<=|>=|<>|!=|=|<|>|\+|\-|\*|\/)/, sql) ->
+      matched = Regex.run(@op_re, sql) ->
         [op | _] = matched
         rest = String.slice(sql, String.length(op)..-1//1)
         do_tokenize(rest, [%{type: :operator, text: op} | acc])
 
       # Punctuation
-      matched = Regex.run(~r/^(,|\(|\)|;)/, sql) ->
+      matched = Regex.run(@punct_re, sql) ->
         [punct | _] = matched
         rest = String.slice(sql, String.length(punct)..-1//1)
         do_tokenize(rest, [%{type: :punctuation, text: punct} | acc])
@@ -333,6 +350,7 @@ defmodule Strata.UI.Components.SQLEditor do
             case key do
               char when is_binary(char) -> insert_text(active_tab.content, active_tab.cursor, char)
               {:char, char} -> insert_text(active_tab.content, active_tab.cursor, char)
+              {:paste, text} -> insert_text(active_tab.content, active_tab.cursor, text)
               :tab -> insert_text(active_tab.content, active_tab.cursor, "  ")
               :enter -> insert_text(active_tab.content, active_tab.cursor, "\n")
               :backspace -> backspace(active_tab.content, active_tab.cursor)
@@ -412,7 +430,7 @@ defmodule Strata.UI.Components.SQLEditor do
       |> Enum.with_index()
       |> Enum.map(fn {line, idx} ->
         line_num = String.pad_leading("#{idx + 1}", 3, " ")
-        tokens = tokenize(line)
+        tokens = Strata.UI.Cache.fetch(:sql_tokens, line, 500, fn -> tokenize(line) end)
 
         %{
           line_number: idx + 1,

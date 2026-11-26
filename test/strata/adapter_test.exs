@@ -34,5 +34,12 @@ defmodule Strata.AdapterTest do
       assert Adapter.default_port(:sqlite) == 0
       assert Adapter.default_port(:unknown) == 0
     end
+
+    test "quotes SQL identifiers safely per driver" do
+      assert Adapter.quote_identifier(:postgres, "users") == ~s("users")
+      assert Adapter.quote_identifier(:postgres, ~s(my"table)) == ~s("my""table")
+      assert Adapter.quote_identifier(:sqlite, ~s(a"b)) == ~s("a""b")
+      assert Adapter.quote_identifier(:mysql, "my`table") == "`my``table`"
+    end
   end
 end

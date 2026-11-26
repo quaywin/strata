@@ -13,6 +13,10 @@ defmodule Strata.UI.Components.FooterTest do
       assert is_binary(rendered.text)
       assert rendered.text =~ "Table/Query View"
       assert rendered.text =~ "Add Conn"
+
+      app_with_status = %{app_sidebar | status_message: "[Cache] Loaded users (50 rows)"}
+      rendered_status = Footer.render(app_with_status, %{x: 0, y: 39, width: 120, height: 1})
+      assert rendered_status.text =~ "[Cache] Loaded users (50 rows)"
     end
 
     test "renders modal keybindings when modal active" do

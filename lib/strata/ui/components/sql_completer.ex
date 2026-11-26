@@ -41,16 +41,29 @@ defmodule Strata.UI.Components.SQLCompleter do
   end
 
   @doc """
-  Extracts table names from current sidebar tree nodes.
+  Extracts table names from all sidebar tree nodes (including collapsed branches).
   """
   @spec extract_tables([map()]) :: [String.t()]
   def extract_tables(nodes) when is_list(nodes) do
-    flat = Strata.UI.Components.Sidebar.flatten_visible_nodes(nodes)
-
-    flat
-    |> Enum.filter(&(&1.type in [:table, :view]))
-    |> Enum.map(& &1.label)
+    nodes
+    |> collect_tables([])
+    |> Enum.reverse()
     |> Enum.uniq()
+  end
+
+  defp collect_tables([], acc), do: acc
+
+  defp collect_tables([node | rest], acc) do
+    acc =
+      if Map.get(node, :type) in [:table, :view] do
+        [Map.get(node, :label, "") | acc]
+      else
+        acc
+      end
+
+    children = Map.get(node, :children, [])
+    acc = collect_tables(children, acc)
+    collect_tables(rest, acc)
   end
 
   @doc """

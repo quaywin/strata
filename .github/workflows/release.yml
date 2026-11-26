@@ -1,0 +1,262 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Format, Compile & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MIX_ENV: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20.4"
+          otp-version: "28.5"
+
+      - name: Resolve release SemVer
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          RESOLVED=$(TAG="$TAG" elixir -e '
+            tag = System.fetch_env!("TAG")
+            case Version.parse(tag) do
+              {:ok, _} -> IO.write(tag)
+              :error ->
+                clean = tag |> String.split(".") |> Enum.map(&Regex.replace(~r/^0+(\d)/, &1, "\\1")) |> Enum.join(".")
+                if match?({:ok, _}, Version.parse(clean)), do: IO.write(clean), else: IO.write("")
+            end
+          ')
+          if [ -n "$RESOLVED" ]; then
+            echo "STRATA_VERSION=$RESOLVED" >> "$GITHUB_ENV"
+          fi
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: false
+
+      - name: Cache Mix dependencies
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            ~/.hex
+            ~/.mix/archives
+          key: ci-test-deps-${{ runner.os }}-1.20.4-28.5-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ci-test-deps-${{ runner.os }}-1.20.4-28.5-
+
+      - name: Cache Mix build & Rust crates
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build/test
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ci-test-build-${{ runner.os }}-1.20.4-28.5-${{ hashFiles('**/mix.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ci-test-build-${{ runner.os }}-1.20.4-28.5-${{ hashFiles('**/mix.lock') }}-
+            ci-test-build-${{ runner.os }}-1.20.4-28.5-
+
+      - name: Install Hex & Rebar dependencies
+        run: |
+          mix local.rebar --if-missing --force
+          mix local.hex --if-missing --force
+          if [ "${{ steps.cache-deps.outputs.cache-hit }}" != "true" ]; then
+            mix deps.get
+          fi
+
+      - name: Compile with warnings as errors
+        run: mix compile --warnings-as-errors
+
+      - name: Run tests
+        run: mix test --no-compile
+
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      matrix:
+        include:
+          - target: linux_x86_64
+            os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+            target_arch: x86_64
+            target_os: linux
+            target_abi: musl
+          - target: macos_aarch64
+            os: macos-15
+            rust_target: aarch64-apple-darwin
+            target_arch: aarch64
+            target_os: apple
+            target_abi: darwin
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20.4"
+          otp-version: "28.5"
+
+      - name: Set up Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: "0.16.0"
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.rust_target }}
+          cache: false
+
+      - name: Cache Mix prod dependencies
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            ~/.hex
+            ~/.mix/archives
+          key: ${{ matrix.target }}-prod-deps-1.20.4-28.5-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ matrix.target }}-prod-deps-1.20.4-28.5-
+
+      - name: Cache Mix prod build & Rust crates
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build/prod
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ matrix.target }}-prod-build-1.20.4-28.5-${{ hashFiles('**/mix.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ matrix.target }}-prod-build-1.20.4-28.5-${{ hashFiles('**/mix.lock') }}-
+            ${{ matrix.target }}-prod-build-1.20.4-28.5-
+
+      - name: Cache Burrito downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/burrito
+          key: ${{ matrix.target }}-burrito-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ matrix.target }}-burrito-
+
+      - name: Install system dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          if ! command -v xz >/dev/null 2>&1 || ! command -v 7z >/dev/null 2>&1 || ! command -v musl-gcc >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xz-utils p7zip-full musl-tools
+          fi
+
+      - name: Install system dependencies (macOS)
+        if: startsWith(matrix.os, 'macos-')
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+        run: |
+          command -v 7z >/dev/null 2>&1 || brew install p7zip
+
+      - name: Install Hex & Rebar dependencies
+        env:
+          MIX_ENV: prod
+          HEX_HTTP_TIMEOUT: "120"
+        run: |
+          mix local.rebar --if-missing --force
+          mix local.hex --if-missing --force
+          if [ "${{ steps.cache-deps.outputs.cache-hit }}" != "true" ]; then
+            mix deps.get --only prod
+          fi
+
+      - name: Resolve release SemVer
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          RESOLVED=$(TAG="$TAG" elixir -e '
+            tag = System.fetch_env!("TAG")
+            case Version.parse(tag) do
+              {:ok, _} -> IO.write(tag)
+              :error ->
+                clean = tag |> String.split(".") |> Enum.map(&Regex.replace(~r/^0+(\d)/, &1, "\\1")) |> Enum.join(".")
+                if match?({:ok, _}, Version.parse(clean)), do: IO.write(clean), else: IO.write("")
+            end
+          ')
+          if [ -n "$RESOLVED" ]; then
+            echo "STRATA_VERSION=$RESOLVED" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build release binary
+        env:
+          MIX_ENV: prod
+          BURRITO_TARGET: ${{ matrix.target }}
+          TARGET_ARCH: ${{ matrix.target_arch }}
+          TARGET_OS: ${{ matrix.target_os }}
+          TARGET_ABI: ${{ matrix.target_abi }}
+        run: mix release --overwrite
+
+      - name: Verify release binary
+        run: |
+          ls -la burrito_out/
+          ./burrito_out/strata_${{ matrix.target }} --version
+          ./burrito_out/strata_${{ matrix.target }} --help
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: burrito_out/strata_${{ matrix.target }}
+          retention-days: 1
+
+  release:
+    name: Create GitHub Release
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: burrito_out
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: List downloaded binaries
+        run: |
+          ls -la burrito_out/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            burrito_out/strata_macos_aarch64
+            burrito_out/strata_linux_x86_64
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

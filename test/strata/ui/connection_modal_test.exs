@@ -143,5 +143,55 @@ defmodule Strata.UI.Components.ConnectionModalTest do
       assert is_list(rendered.fields)
       assert rendered.focused_field == :name
     end
+
+    test "hides network/auth fields for sqlite driver and uses DB File Path label" do
+      sqlite_modal = ConnectionModal.new(driver: :sqlite, database: "/tmp/app.db")
+      fields = ConnectionModal.visible_fields(:sqlite)
+      assert fields == [:name, :driver, :database, :test_button, :save_button, :cancel_button]
+
+      rendered = ConnectionModal.render(sqlite_modal, %{width: 72, height: 22})
+      labels = Enum.map(rendered.fields, & &1.label)
+      assert "DB File Path" in labels
+      refute "Host" in labels
+      refute "Password" in labels
+    end
+  end
+
+  describe "UX safeguards & URI parsing" do
+    test "Enter in text field moves to next field instead of saving prematurely" do
+      modal = ConnectionModal.new(focused_field: :host)
+      next = ConnectionModal.handle_key(modal, :enter)
+      assert %ConnectionModal{focused_field: :port} = next
+    end
+
+    test "cycling driver updates default port/database/username intelligently" do
+      modal = ConnectionModal.new(driver: :postgres, focused_field: :driver)
+      mysql_modal = ConnectionModal.handle_key(modal, :right)
+      assert mysql_modal.driver == :mysql
+      assert mysql_modal.port == 3306
+      assert mysql_modal.username == "root"
+      assert mysql_modal.database == ""
+    end
+
+    test "ignores free-text typing on :ssh_profile_id selector field" do
+      modal = ConnectionModal.new(focused_field: :ssh_profile_id, ssh_profile_id: nil)
+      after_type = ConnectionModal.handle_key(modal, "x")
+      assert after_type.ssh_profile_id == nil
+    end
+
+    test "parse_uri & apply_uri populate Postgres/MySQL URIs and SQLite paths" do
+      uri_modal = ConnectionModal.new() |> ConnectionModal.apply_uri("postgres://admin:s3cret@db.host:5433/prod?sslmode=require")
+      assert uri_modal.driver == :postgres
+      assert uri_modal.host == "db.host"
+      assert uri_modal.port == 5433
+      assert uri_modal.username == "admin"
+      assert uri_modal.password == "s3cret"
+      assert uri_modal.database == "prod"
+      assert uri_modal.ssl == true
+
+      sqlite_modal = ConnectionModal.new() |> ConnectionModal.apply_uri("/var/data/strata.sqlite")
+      assert sqlite_modal.driver == :sqlite
+      assert sqlite_modal.database == "/var/data/strata.sqlite"
+    end
   end
 end

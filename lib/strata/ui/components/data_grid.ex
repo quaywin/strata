@@ -7,30 +7,28 @@ defmodule Strata.UI.Components.DataGrid do
   @type cell :: {non_neg_integer(), non_neg_integer()}
   @type mode :: :browsing | :selecting
 
-  defstruct [
-    columns: [],
-    rows: [],
-    rows_tuple: nil,
-    cached_static_widths: [],
-    selected_cell: {0, 0},
-    page: 1,
-    page_size: 20,
-    total_rows: 0,
-    total_db_rows: nil,
-    mode: :browsing,
-    view_mode: :data,
-    scroll_offset: 0,
-    col_offset: 0,
-    has_more: true,
-    loading_more: false,
-    batch_size: 100,
-    sort_by: nil,
-    primary_keys: [],
-    pending_edits: %{},
-    pending_inserts: [],
-    pending_deletes: MapSet.new(),
-    editing_cell: nil
-  ]
+  defstruct columns: [],
+            rows: [],
+            rows_tuple: nil,
+            cached_static_widths: [],
+            selected_cell: {0, 0},
+            page: 1,
+            page_size: 20,
+            total_rows: 0,
+            total_db_rows: nil,
+            mode: :browsing,
+            view_mode: :data,
+            scroll_offset: 0,
+            col_offset: 0,
+            has_more: true,
+            loading_more: false,
+            batch_size: 100,
+            sort_by: nil,
+            primary_keys: [],
+            pending_edits: %{},
+            pending_inserts: [],
+            pending_deletes: MapSet.new(),
+            editing_cell: nil
 
   @type t :: %__MODULE__{
           columns: [String.t()],
@@ -105,7 +103,8 @@ defmodule Strata.UI.Components.DataGrid do
   """
   @spec dirty_count(t()) :: non_neg_integer()
   def dirty_count(%__MODULE__{} = grid) do
-    map_size(grid.pending_edits) + length(grid.pending_inserts) + MapSet.size(grid.pending_deletes)
+    map_size(grid.pending_edits) + length(grid.pending_inserts) +
+      MapSet.size(grid.pending_deletes)
   end
 
   @doc """
@@ -215,7 +214,8 @@ defmodule Strata.UI.Components.DataGrid do
           else
             edits_by_row =
               Enum.reduce(grid.pending_edits, %{}, fn
-                {{r_idx, c_idx}, %{new: new_val}}, acc when r_idx >= start_idx and r_idx <= base_end ->
+                {{r_idx, c_idx}, %{new: new_val}}, acc
+                when r_idx >= start_idx and r_idx <= base_end ->
                   Map.update(acc, r_idx, [{c_idx, new_val}], &[{c_idx, new_val} | &1])
 
                 _, acc ->
@@ -341,7 +341,13 @@ defmodule Strata.UI.Components.DataGrid do
             if(dir == :asc, do: :asc, else: :desc)
           )
 
-        %{grid | rows: sorted, rows_tuple: List.to_tuple(sorted), scroll_offset: 0, selected_cell: {0, elem(grid.selected_cell, 1)}}
+        %{
+          grid
+          | rows: sorted,
+            rows_tuple: List.to_tuple(sorted),
+            scroll_offset: 0,
+            selected_cell: {0, elem(grid.selected_cell, 1)}
+        }
     end
   end
 
@@ -439,7 +445,9 @@ defmodule Strata.UI.Components.DataGrid do
         pending_deletes: MapSet.new(),
         editing_cell: nil,
         total_rows: length(rows),
-        selected_cell: {min(max(0, length(rows) - 1), elem(grid.selected_cell, 0)), elem(grid.selected_cell, 1)}
+        selected_cell:
+          {min(max(0, length(rows) - 1), elem(grid.selected_cell, 0)),
+           elem(grid.selected_cell, 1)}
     }
   end
 
@@ -469,8 +477,13 @@ defmodule Strata.UI.Components.DataGrid do
   Checks if current scroll offset or selection cursor is near the end of loaded rows (default threshold: 25 rows).
   """
   @spec near_bottom?(t(), pos_integer(), non_neg_integer()) :: boolean()
-  def near_bottom?(%__MODULE__{total_rows: total, rows: rows, scroll_offset: offset, selected_cell: {r, _}}, viewport_h, threshold \\ 25) do
+  def near_bottom?(
+        %__MODULE__{total_rows: total, rows: rows, scroll_offset: offset, selected_cell: {r, _}},
+        viewport_h,
+        threshold \\ 25
+      ) do
     row_count = if total > 0, do: total, else: length(rows)
+
     if row_count == 0 do
       false
     else
@@ -525,6 +538,7 @@ defmodule Strata.UI.Components.DataGrid do
             {nr, s}
           else
             nr = max(0, r - step)
+
             ns =
               cond do
                 nr < curr_scroll -> nr
@@ -542,6 +556,7 @@ defmodule Strata.UI.Components.DataGrid do
             {nr, s}
           else
             nr = min(max_row, r + step)
+
             ns =
               cond do
                 nr >= curr_scroll + viewport_h -> min(max_top, nr - viewport_h + 1)
@@ -600,16 +615,20 @@ defmodule Strata.UI.Components.DataGrid do
               if curr_col_scroll >= max_col_off do
                 curr_col_scroll
               else
-                Enum.reduce_while((curr_col_scroll + 1)..max_col_off, curr_col_scroll + 1, fn test_off, _acc ->
-                  test_widths = column_widths(all_w, max_width, test_off)
-                  test_last = test_off + length(test_widths) - 1
+                Enum.reduce_while(
+                  (curr_col_scroll + 1)..max_col_off,
+                  curr_col_scroll + 1,
+                  fn test_off, _acc ->
+                    test_widths = column_widths(all_w, max_width, test_off)
+                    test_last = test_off + length(test_widths) - 1
 
-                  if test_last > current_last_visible do
-                    {:halt, test_off}
-                  else
-                    {:cont, test_off + 1}
+                    if test_last > current_last_visible do
+                      {:halt, test_off}
+                    else
+                      {:cont, test_off + 1}
+                    end
                   end
-                end)
+                )
                 |> min(max_col_off)
               end
 
@@ -625,7 +644,8 @@ defmodule Strata.UI.Components.DataGrid do
                 if curr_col_scroll >= max_col_off do
                   curr_col_scroll
                 else
-                  Enum.reduce_while((curr_col_scroll + 1)..max_col_off, max_col_off, fn test_off, _acc ->
+                  Enum.reduce_while((curr_col_scroll + 1)..max_col_off, max_col_off, fn test_off,
+                                                                                        _acc ->
                     test_widths = column_widths(all_w, max_width, test_off)
                     test_count = length(test_widths)
 
@@ -754,7 +774,13 @@ defmodule Strata.UI.Components.DataGrid do
     new_scroll = (clamped_page - 1) * grid.page_size
     max_row = max(0, length(grid.rows) - 1)
     target_row = min(max_row, new_scroll)
-    %{grid | page: clamped_page, scroll_offset: new_scroll, selected_cell: {target_row, elem(grid.selected_cell, 1)}}
+
+    %{
+      grid
+      | page: clamped_page,
+        scroll_offset: new_scroll,
+        selected_cell: {target_row, elem(grid.selected_cell, 1)}
+    }
   end
 
   @doc """
@@ -912,7 +938,11 @@ defmodule Strata.UI.Components.DataGrid do
     case key do
       :esc ->
         if Map.get(app, :inspector_open, false) do
-          {%{app | inspector_open: false, status_message: "Inspector closed — press [Esc] again to exit Select"}, grid}
+          {%{
+             app
+             | inspector_open: false,
+               status_message: "Inspector closed — press [Esc] again to exit Select"
+           }, grid}
         else
           exit_selecting_mode(app, grid)
         end
@@ -1121,10 +1151,12 @@ defmodule Strata.UI.Components.DataGrid do
   end
 
   def format_cell_for_copy(val), do: Strata.Formatter.sanitize_cell(val)
+
   @doc """
   Computes or returns cached static width for every column.
   """
-  def static_widths(%__MODULE__{cached_static_widths: widths}) when is_list(widths) and widths != [] do
+  def static_widths(%__MODULE__{cached_static_widths: widths})
+      when is_list(widths) and widths != [] do
     widths
   end
 
@@ -1198,7 +1230,8 @@ defmodule Strata.UI.Components.DataGrid do
   from that offset still fill or exceed max_width.
   Accepts either {columns, rows} or precomputed `all_w` static widths list.
   """
-  def max_col_offset(all_w, max_width) when is_list(all_w) and (all_w == [] or is_integer(hd(all_w))) do
+  def max_col_offset(all_w, max_width)
+      when is_list(all_w) and (all_w == [] or is_integer(hd(all_w))) do
     col_count = length(all_w)
 
     cond do
@@ -1229,7 +1262,8 @@ defmodule Strata.UI.Components.DataGrid do
   Slices the static width array from col_offset and fits within max_width.
   Accepts either precomputed `all_w` integer list or {columns, rows}.
   """
-  def column_widths(all_w, max_width, col_offset) when is_list(all_w) and (all_w == [] or is_integer(hd(all_w))) do
+  def column_widths(all_w, max_width, col_offset)
+      when is_list(all_w) and (all_w == [] or is_integer(hd(all_w))) do
     column_widths_from_all_w(all_w, max_width, col_offset)
   end
 
@@ -1387,10 +1421,11 @@ defmodule Strata.UI.Components.DataGrid do
       total_rows: grid.total_rows,
       selected_cell: grid.selected_cell,
       status: status,
-      lines: [
-        %{text: header_line, type: :header},
-        %{text: separator_line, type: :separator}
-      ] ++ row_lines
+      lines:
+        [
+          %{text: header_line, type: :header},
+          %{text: separator_line, type: :separator}
+        ] ++ row_lines
     }
   end
 end

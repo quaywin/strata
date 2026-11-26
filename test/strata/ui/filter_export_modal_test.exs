@@ -4,7 +4,9 @@ defmodule Strata.UI.Components.FilterExportModalTest do
 
   describe "new/2" do
     test "initializes filter modal state" do
-      modal = FilterExportModal.new_filter(where: "status = 'active'", order_by: "id DESC", limit: 100)
+      modal =
+        FilterExportModal.new_filter(where: "status = 'active'", order_by: "id DESC", limit: 100)
+
       assert modal.mode == :filter
       assert modal.where_clause == "status = 'active'"
       assert modal.order_by_clause == "id DESC"
@@ -13,7 +15,9 @@ defmodule Strata.UI.Components.FilterExportModalTest do
     end
 
     test "initializes export modal state" do
-      modal = FilterExportModal.new_export(format: :csv, file_path: "users.csv", scope: :current_page)
+      modal =
+        FilterExportModal.new_export(format: :csv, file_path: "users.csv", scope: :current_page)
+
       assert modal.mode == :export
       assert modal.format == :csv
       assert modal.file_path == "users.csv"
@@ -73,11 +77,21 @@ defmodule Strata.UI.Components.FilterExportModalTest do
     end
 
     test "dispatches apply, export, and cancel actions on button activation" do
-      filter_apply = %{FilterExportModal.new_filter(where: "id = 1") | focused_field: :apply_button}
-      assert {:apply, {:filter, "id = 1", "", nil}, _} = FilterExportModal.handle_key(filter_apply, :enter)
+      filter_apply = %{
+        FilterExportModal.new_filter(where: "id = 1")
+        | focused_field: :apply_button
+      }
 
-      export_btn = %{FilterExportModal.new_export(format: :json, file_path: "out.json") | focused_field: :export_button}
-      assert {:apply, {:export, :json, "out.json", :all}, _} = FilterExportModal.handle_key(export_btn, :enter)
+      assert {:apply, {:filter, "id = 1", "", nil}, _} =
+               FilterExportModal.handle_key(filter_apply, :enter)
+
+      export_btn = %{
+        FilterExportModal.new_export(format: :json, file_path: "out.json")
+        | focused_field: :export_button
+      }
+
+      assert {:apply, {:export, :json, "out.json", :all}, _} =
+               FilterExportModal.handle_key(export_btn, :enter)
 
       cancel_btn = %{FilterExportModal.new_filter() | focused_field: :cancel_button}
       assert {:cancel, _} = FilterExportModal.handle_key(cancel_btn, :enter)
@@ -86,11 +100,12 @@ defmodule Strata.UI.Components.FilterExportModalTest do
 
   describe "build_filter_sql/2" do
     test "constructs SQL clause from filter settings" do
-      modal = FilterExportModal.new_filter(
-        where: "status = 'active'",
-        order_by: "created_at DESC",
-        limit: 50
-      )
+      modal =
+        FilterExportModal.new_filter(
+          where: "status = 'active'",
+          order_by: "created_at DESC",
+          limit: 50
+        )
 
       sql_clause = FilterExportModal.build_filter_sql(modal, "users")
       assert sql_clause =~ "SELECT * FROM users"
@@ -188,9 +203,14 @@ defmodule Strata.UI.Components.FilterExportModalTest do
 
       # Clear button or Ctrl+L returns empty filter payload
       clear_btn = %{moved | focused_field: :clear_button}
-      assert {:apply, {:filter, "", "", nil}, cleared} = FilterExportModal.handle_key(clear_btn, :enter)
+
+      assert {:apply, {:filter, "", "", nil}, cleared} =
+               FilterExportModal.handle_key(clear_btn, :enter)
+
       assert cleared.where_clause == ""
-      assert {:apply, {:filter, "", "", nil}, _} = FilterExportModal.handle_key(moved, {:ctrl, "l"})
+
+      assert {:apply, {:filter, "", "", nil}, _} =
+               FilterExportModal.handle_key(moved, {:ctrl, "l"})
     end
   end
 end

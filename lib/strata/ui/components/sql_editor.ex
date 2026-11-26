@@ -316,7 +316,13 @@ defmodule Strata.UI.Components.SQLEditor do
     active_tab = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
 
     if active_tab do
-      comp = Map.get(active_tab, :completion, %{active?: false, suggestions: [], selected_index: 0, prefix: ""})
+      comp =
+        Map.get(active_tab, :completion, %{
+          active?: false,
+          suggestions: [],
+          selected_index: 0,
+          prefix: ""
+        })
 
       cond do
         comp.active? and key == :down ->
@@ -333,10 +339,20 @@ defmodule Strata.UI.Components.SQLEditor do
           sug = Enum.at(comp.suggestions, comp.selected_index)
 
           if sug do
-            {new_content, new_cursor} = SQLCompleter.apply_completion(active_tab.content, active_tab.cursor, sug, comp.prefix)
+            {new_content, new_cursor} =
+              SQLCompleter.apply_completion(
+                active_tab.content,
+                active_tab.cursor,
+                sug,
+                comp.prefix
+              )
+
             new_comp = %{active?: false, suggestions: [], selected_index: 0, prefix: ""}
 
-            updated_tab = %{active_tab | content: new_content, cursor: new_cursor} |> Map.put(:completion, new_comp)
+            updated_tab =
+              %{active_tab | content: new_content, cursor: new_cursor}
+              |> Map.put(:completion, new_comp)
+
             update_active_tab(app, updated_tab)
           else
             update_active_tab_completion(app, active_tab, %{comp | active?: false})
@@ -348,15 +364,30 @@ defmodule Strata.UI.Components.SQLEditor do
         true ->
           {new_content, new_cursor} =
             case key do
-              char when is_binary(char) -> insert_text(active_tab.content, active_tab.cursor, char)
-              {:char, char} -> insert_text(active_tab.content, active_tab.cursor, char)
-              {:paste, text} -> insert_text(active_tab.content, active_tab.cursor, text)
-              :tab -> insert_text(active_tab.content, active_tab.cursor, "  ")
-              :enter -> insert_text(active_tab.content, active_tab.cursor, "\n")
-              :backspace -> backspace(active_tab.content, active_tab.cursor)
-              :delete -> delete_char(active_tab.content, active_tab.cursor)
+              char when is_binary(char) ->
+                insert_text(active_tab.content, active_tab.cursor, char)
+
+              {:char, char} ->
+                insert_text(active_tab.content, active_tab.cursor, char)
+
+              {:paste, text} ->
+                insert_text(active_tab.content, active_tab.cursor, text)
+
+              :tab ->
+                insert_text(active_tab.content, active_tab.cursor, "  ")
+
+              :enter ->
+                insert_text(active_tab.content, active_tab.cursor, "\n")
+
+              :backspace ->
+                backspace(active_tab.content, active_tab.cursor)
+
+              :delete ->
+                delete_char(active_tab.content, active_tab.cursor)
+
               nav when nav in [:left, :right, :up, :down, :home, :end, :page_up, :page_down] ->
                 {active_tab.content, move_cursor(active_tab.content, active_tab.cursor, nav)}
+
               _other ->
                 {active_tab.content, active_tab.cursor}
             end
@@ -371,7 +402,10 @@ defmodule Strata.UI.Components.SQLEditor do
               %{active?: false, suggestions: [], selected_index: 0, prefix: ""}
             end
 
-          updated_tab = %{active_tab | content: new_content, cursor: new_cursor} |> Map.put(:completion, new_comp)
+          updated_tab =
+            %{active_tab | content: new_content, cursor: new_cursor}
+            |> Map.put(:completion, new_comp)
+
           update_active_tab(app, updated_tab)
       end
     else
@@ -422,7 +456,13 @@ defmodule Strata.UI.Components.SQLEditor do
     active_idx = active_tab_index(app)
     titles = tab_titles(app)
 
-    comp = Map.get(active_tab || %{}, :completion, %{active?: false, suggestions: [], selected_index: 0, prefix: ""})
+    comp =
+      Map.get(active_tab || %{}, :completion, %{
+        active?: false,
+        suggestions: [],
+        selected_index: 0,
+        prefix: ""
+      })
 
     lines =
       content

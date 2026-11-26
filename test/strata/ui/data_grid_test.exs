@@ -6,6 +6,7 @@ defmodule Strata.UI.Components.DataGridTest do
 
   setup do
     columns = ["id", "name", "role", "created_at"]
+
     rows = [
       [1, "Alice", "Admin", "2026-01-01"],
       [2, "Bob", "Developer", "2026-01-02"],
@@ -77,7 +78,9 @@ defmodule Strata.UI.Components.DataGridTest do
       assert grid.scroll_offset == 4
     end
 
-    test "copying cell in selecting mode writes status message without pushing modal", %{grid: grid} do
+    test "copying cell in selecting mode writes status message without pushing modal", %{
+      grid: grid
+    } do
       selecting_grid = %{grid | mode: :selecting, selected_cell: {0, 1}}
       app = App.new(focus: :datagrid, datagrid_state: selecting_grid)
 
@@ -89,7 +92,13 @@ defmodule Strata.UI.Components.DataGridTest do
       assert row_copied_app.status_message =~ "Copied row 1 (4 cols)"
 
       # Preserves real newlines in multiline printable cells when copying
-      multi_grid = %{grid | mode: :selecting, rows: [[1, "line1\nline2", "Admin", "2026-01-01"]], selected_cell: {0, 1}}
+      multi_grid = %{
+        grid
+        | mode: :selecting,
+          rows: [[1, "line1\nline2", "Admin", "2026-01-01"]],
+          selected_cell: {0, 1}
+      }
+
       {multi_app, _} = DataGrid.handle_key(app, multi_grid, "c")
       assert multi_app.status_message =~ "Copied name: line1 ↵ line2"
       assert {:ok, "line1\nline2"} = Strata.Clipboard.paste()
@@ -104,19 +113,31 @@ defmodule Strata.UI.Components.DataGridTest do
       assert empty_app.status_message =~ "No data to copy"
 
       # Double-click CellDetailModal supports copying cell value with C / c
-      modal_app = %{app | modals: [Strata.UI.Components.CellDetailModal.new("secret-token", column: "token")]}
+      modal_app = %{
+        app
+        | modals: [Strata.UI.Components.CellDetailModal.new("secret-token", column: "token")]
+      }
+
       copied_modal_app = App.handle_key(modal_app, "C")
       assert copied_modal_app.status_message =~ "Copied token"
       assert {:ok, "secret-token"} = Strata.Clipboard.paste()
 
       # OSC 52 encoding supports remote terminals (herdr / SSH / tmux)
       assert Strata.Clipboard.encode_osc52("hello") == "\e]52;c;aGVsbG8=\a"
-      assert Strata.Clipboard.encode_osc52("hello", tmux: true) == "\ePtmux;\e\e]52;c;aGVsbG8=\a\e\\"
+
+      assert Strata.Clipboard.encode_osc52("hello", tmux: true) ==
+               "\ePtmux;\e\e]52;c;aGVsbG8=\a\e\\"
     end
 
     test "scroll_viewport scrolls scroll_offset immediately in selecting mode and clamps selected_cell" do
       rows = Enum.map(1..30, fn i -> [i, "User #{i}"] end)
-      grid = DataGrid.new(["id", "name"], rows, mode: :selecting, selected_cell: {0, 0}, scroll_offset: 0)
+
+      grid =
+        DataGrid.new(["id", "name"], rows,
+          mode: :selecting,
+          selected_cell: {0, 0},
+          scroll_offset: 0
+        )
 
       scrolled = DataGrid.scroll_viewport(grid, :down, 10, step: 3)
       assert scrolled.scroll_offset == 3
@@ -170,12 +191,16 @@ defmodule Strata.UI.Components.DataGridTest do
   end
 
   describe "Infinite scroll & deduplication helpers" do
-    test "append_rows deduplicates new rows against existing rows and updates state", %{grid: grid} do
+    test "append_rows deduplicates new rows against existing rows and updates state", %{
+      grid: grid
+    } do
       initial_count = length(grid.rows)
 
       new_rows = [
-        [3, "Charlie", "Designer", "2026-01-03"], # Duplicate row
-        [6, "Frank", "DevOps", "2026-01-06"]      # New unique row
+        # Duplicate row
+        [3, "Charlie", "Designer", "2026-01-03"],
+        # New unique row
+        [6, "Frank", "DevOps", "2026-01-06"]
       ]
 
       updated_grid = DataGrid.append_rows(grid, new_rows, true)
@@ -203,6 +228,7 @@ defmodule Strata.UI.Components.DataGridTest do
   describe "Column width calculation" do
     test "column_widths calculates accurate width based on header length and content max length" do
       cols = ["id", "description"]
+
       display_rows = [
         [1, "Short"],
         [2, "Very long description that exceeds header length"]
@@ -226,14 +252,30 @@ defmodule Strata.UI.Components.DataGridTest do
   end
 
   describe "Sorting and staged mutations" do
-    test "cycle_sort toggles asc -> desc -> nil and sort_rows_in_memory orders rows cleanly", %{grid: grid} do
+    test "cycle_sort toggles asc -> desc -> nil and sort_rows_in_memory orders rows cleanly", %{
+      grid: grid
+    } do
       asc_grid = DataGrid.cycle_sort(grid, "name") |> DataGrid.sort_rows_in_memory()
       assert asc_grid.sort_by == {"name", :asc}
-      assert Enum.map(asc_grid.rows, &Enum.at(&1, 1)) == ["Alice", "Bob", "Charlie", "David", "Eve"]
+
+      assert Enum.map(asc_grid.rows, &Enum.at(&1, 1)) == [
+               "Alice",
+               "Bob",
+               "Charlie",
+               "David",
+               "Eve"
+             ]
 
       desc_grid = DataGrid.cycle_sort(asc_grid, "name") |> DataGrid.sort_rows_in_memory()
       assert desc_grid.sort_by == {"name", :desc}
-      assert Enum.map(desc_grid.rows, &Enum.at(&1, 1)) == ["Eve", "David", "Charlie", "Bob", "Alice"]
+
+      assert Enum.map(desc_grid.rows, &Enum.at(&1, 1)) == [
+               "Eve",
+               "David",
+               "Charlie",
+               "Bob",
+               "Alice"
+             ]
 
       cleared = DataGrid.cycle_sort(desc_grid, "name")
       assert cleared.sort_by == nil
@@ -264,7 +306,8 @@ defmodule Strata.UI.Components.DataGridTest do
       assert DataGrid.effective_rows(reverted) == grid.rows
     end
 
-    test "O(1) effective_row_count, effective_row_at, and effective_rows_slice match effective_rows including fallback", %{grid: grid} do
+    test "O(1) effective_row_count, effective_row_at, and effective_rows_slice match effective_rows including fallback",
+         %{grid: grid} do
       edited =
         grid
         |> DataGrid.stage_cell_edit(1, 1, "Bobby")
@@ -284,7 +327,10 @@ defmodule Strata.UI.Components.DataGridTest do
       direct_override = %{grid | rows: [[99, "Zoe", "user", "2026-02-01"]], total_rows: 1}
       assert DataGrid.base_row_count(direct_override) == 1
       assert DataGrid.effective_row_at(direct_override, 0) == [99, "Zoe", "user", "2026-02-01"]
-      assert DataGrid.effective_rows_slice(direct_override, 0, 5) == [[99, "Zoe", "user", "2026-02-01"]]
+
+      assert DataGrid.effective_rows_slice(direct_override, 0, 5) == [
+               [99, "Zoe", "user", "2026-02-01"]
+             ]
     end
   end
 end

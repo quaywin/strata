@@ -7,23 +7,21 @@ defmodule Strata.UI.Components.CellDetailModal do
 
   @formats [:json, :text, :raw]
 
-  defstruct [
-    column: nil,
-    row_index: nil,
-    raw_value: nil,
-    format: :text,
-    detected_type: :text,
-    formatted_value: "",
-    scroll_offset: 0,
-    wrap_lines: true
-  ]
+  defstruct column: nil,
+            row_index: nil,
+            raw_value: nil,
+            format: :text,
+            detected_type: :text,
+            formatted_value: "",
+            scroll_offset: 0,
+            wrap_lines: true
 
   @type t :: %__MODULE__{
           column: String.t() | nil,
           row_index: integer() | nil,
           raw_value: any(),
           format: :json | :text | :raw,
-          detected_type: :json | :text | :nil | :primitive | :uuid | :binary,
+          detected_type: :json | :text | nil | :primitive | :uuid | :binary,
           formatted_value: String.t(),
           scroll_offset: non_neg_integer(),
           wrap_lines: boolean()
@@ -112,7 +110,9 @@ defmodule Strata.UI.Components.CellDetailModal do
       end
 
     content_str = Enum.join(visible_lines, "\n")
-    status_hint = "\n───── [ Format: #{modal.format} (f) | Wrap: #{modal.wrap_lines} (w) | c: Copy | ↑/↓: Scroll | Esc: Close ] ─────"
+
+    status_hint =
+      "\n───── [ Format: #{modal.format} (f) | Wrap: #{modal.wrap_lines} (w) | c: Copy | ↑/↓: Scroll | Esc: Close ] ─────"
 
     %{
       title: title,
@@ -129,7 +129,7 @@ defmodule Strata.UI.Components.CellDetailModal do
     }
   end
 
-  defp analyze_and_format(nil), do: {:nil, :text, "<NULL>"}
+  defp analyze_and_format(nil), do: {nil, :text, "<NULL>"}
 
   defp analyze_and_format(value) when is_map(value) or is_list(value) do
     case Jason.encode(value, pretty: true) do

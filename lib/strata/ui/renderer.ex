@@ -9,7 +9,12 @@ defmodule Strata.UI.Renderer do
   alias Strata.UI.Components.Sidebar
   alias Strata.UI.Components.SQLEditor
 
-  @type rect :: %{x: non_neg_integer(), y: non_neg_integer(), width: pos_integer(), height: pos_integer()}
+  @type rect :: %{
+          x: non_neg_integer(),
+          y: non_neg_integer(),
+          width: pos_integer(),
+          height: pos_integer()
+        }
 
   @doc """
   Computes layout grid rectangles for main UI panes based on window size {width, height} and active_view.
@@ -93,7 +98,8 @@ defmodule Strata.UI.Renderer do
     modal_items = render_modal(app, app.window_size)
 
     selection_items =
-      case {Map.get(app, :text_selection), Map.get(app, :selection_screen), Map.get(app, :selection_bounds)} do
+      case {Map.get(app, :text_selection), Map.get(app, :selection_screen),
+            Map.get(app, :selection_bounds)} do
         {{anchor, current}, %{} = screen, %{} = bounds} ->
           Strata.UI.Selection.render_overlays(screen, anchor, current, bounds)
 
@@ -101,7 +107,10 @@ defmodule Strata.UI.Renderer do
           []
       end
 
-    List.flatten([header_item, sidebar_item, editor_item, datagrid_item, footer_item] ++ modal_items ++ selection_items)
+    List.flatten(
+      [header_item, sidebar_item, editor_item, datagrid_item, footer_item] ++
+        modal_items ++ selection_items
+    )
   end
 
   defp to_rect(%{x: x, y: y, width: w, height: h}) do
@@ -110,8 +119,15 @@ defmodule Strata.UI.Renderer do
 
   defp render_header(app, area) do
     if area.height > 0 do
-      table_option = if Map.get(app, :active_view) == :table_view, do: "[★ 1: Table View]", else: "[ 1: Table View ]"
-      query_option = if Map.get(app, :active_view) == :query_view, do: "[★ 2: Query View]", else: "[ 2: Query View ]"
+      table_option =
+        if Map.get(app, :active_view) == :table_view,
+          do: "[★ 1: Table View]",
+          else: "[ 1: Table View ]"
+
+      query_option =
+        if Map.get(app, :active_view) == :query_view,
+          do: "[★ 2: Query View]",
+          else: "[ 2: Query View ]"
 
       header_text = " 🗄️ Strata TUI  │  View: #{table_option} #{query_option}"
 
@@ -240,9 +256,10 @@ defmodule Strata.UI.Renderer do
               end
 
             db_part =
-              if db_name != "" and String.downcase(db_name) != String.downcase(conn_name) and db_name != schema,
-                do: " · #{db_name}",
-                else: ""
+              if db_name != "" and String.downcase(db_name) != String.downcase(conn_name) and
+                   db_name != schema,
+                 do: " · #{db_name}",
+                 else: ""
 
             schema_part = if is_binary(schema) and schema != "", do: " · #{schema}", else: ""
             " SQL EDITOR [#{conn_name}#{db_part}#{schema_part}] "
@@ -450,7 +467,14 @@ defmodule Strata.UI.Renderer do
       if inspector_open? do
         insp_w = min(44, max(28, round(body_area.width * 0.34)))
         g = %{body_area | width: max(10, body_area.width - insp_w)}
-        i = %{x: body_area.x + body_area.width - insp_w, y: body_area.y, width: insp_w, height: body_area.height}
+
+        i = %{
+          x: body_area.x + body_area.width - insp_w,
+          y: body_area.y,
+          width: insp_w,
+          height: body_area.height
+        }
+
         {g, i}
       else
         {body_area, nil}
@@ -509,7 +533,9 @@ defmodule Strata.UI.Renderer do
     max_line_w = max(8, i_area.width - 3)
     fmt = Map.get(app, :inspector_format, :auto)
 
-    {value_lines, fmt_badge} = cached_inspector_value_lines(raw_cell, col_name, r_idx, fmt, max_line_w)
+    {value_lines, fmt_badge} =
+      cached_inspector_value_lines(raw_cell, col_name, r_idx, fmt, max_line_w)
+
     summary_lines = cached_inspector_summary_lines(grid.columns, row_vals, c_idx, max_line_w)
 
     val_vp = max(1, areas.value_area.height - 2)
@@ -536,39 +562,49 @@ defmodule Strata.UI.Renderer do
     alias ExRatatui.Style
     alias ExRatatui.Text.{Line, Span}
 
-    Strata.UI.Cache.fetch(:strata_inspector_sum_cache, {columns, row_vals, c_idx, max_line_w}, 64, fn ->
-      if columns != [] and row_vals != [] do
-        columns
-        |> Enum.zip(row_vals)
-        |> Enum.with_index()
-        |> Enum.map(fn {{c, v}, idx} ->
-          active? = idx == c_idx
-          prefix = if active?, do: "▸ ", else: "  "
-          col_str = "#{c}: "
-          avail_val = max(4, max_line_w - String.length(prefix) - String.length(col_str))
-          val_str = Strata.Formatter.sanitize_cell_preview(v, avail_val)
-          clipped_val = if String.length(val_str) > avail_val, do: String.slice(val_str, 0, avail_val - 1) <> "…", else: val_str
+    Strata.UI.Cache.fetch(
+      :strata_inspector_sum_cache,
+      {columns, row_vals, c_idx, max_line_w},
+      64,
+      fn ->
+        if columns != [] and row_vals != [] do
+          columns
+          |> Enum.zip(row_vals)
+          |> Enum.with_index()
+          |> Enum.map(fn {{c, v}, idx} ->
+            active? = idx == c_idx
+            prefix = if active?, do: "▸ ", else: "  "
+            col_str = "#{c}: "
+            avail_val = max(4, max_line_w - String.length(prefix) - String.length(col_str))
+            val_str = Strata.Formatter.sanitize_cell_preview(v, avail_val)
 
-          val_style =
-            cond do
-              active? -> %Style{fg: :yellow, modifiers: [:bold]}
-              is_nil(v) -> %Style{fg: :dark_gray}
-              is_number(v) -> %Style{fg: :magenta}
-              true -> %Style{fg: :white}
-            end
+            clipped_val =
+              if String.length(val_str) > avail_val,
+                do: String.slice(val_str, 0, avail_val - 1) <> "…",
+                else: val_str
 
-          col_style = if active?, do: %Style{fg: :yellow, modifiers: [:bold]}, else: %Style{fg: :cyan}
+            val_style =
+              cond do
+                active? -> %Style{fg: :yellow, modifiers: [:bold]}
+                is_nil(v) -> %Style{fg: :dark_gray}
+                is_number(v) -> %Style{fg: :magenta}
+                true -> %Style{fg: :white}
+              end
 
-          Line.new([
-            Span.new(prefix, style: col_style),
-            Span.new(col_str, style: col_style),
-            Span.new(clipped_val, style: val_style)
-          ])
-        end)
-      else
-        [Line.new([Span.new("(No row selected)", style: %Style{fg: :dark_gray})])]
+            col_style =
+              if active?, do: %Style{fg: :yellow, modifiers: [:bold]}, else: %Style{fg: :cyan}
+
+            Line.new([
+              Span.new(prefix, style: col_style),
+              Span.new(col_str, style: col_style),
+              Span.new(clipped_val, style: val_style)
+            ])
+          end)
+        else
+          [Line.new([Span.new("(No row selected)", style: %Style{fg: :dark_gray})])]
+        end
       end
-    end)
+    )
   end
 
   defp cached_inspector_value_lines(raw_cell, col_name, r_idx, fmt, max_line_w) do
@@ -581,26 +617,33 @@ defmodule Strata.UI.Renderer do
     alias ExRatatui.Style
     alias ExRatatui.Text.{Line, Span}
 
-    detail = Strata.UI.Components.CellDetailModal.new(raw_cell, column: col_name, row_index: r_idx + 1)
+    detail =
+      Strata.UI.Components.CellDetailModal.new(raw_cell, column: col_name, row_index: r_idx + 1)
 
     cond do
       fmt == :raw ->
         {Strata.Formatter.wrap_text_lines(inspect(raw_cell, pretty: true), max_line_w), "raw"}
 
       fmt == :text ->
-        {Strata.Formatter.wrap_text_lines(Strata.Formatter.format_cell_detail(raw_cell), max_line_w), "text"}
+        {Strata.Formatter.wrap_text_lines(
+           Strata.Formatter.format_cell_detail(raw_cell),
+           max_line_w
+         ), "text"}
 
       detail.detected_type == :json ->
         {Strata.Formatter.highlight_json_lines(detail.formatted_value, max_line_w), "JSON"}
 
-      detail.detected_type == :nil ->
-        {[Line.new([Span.new("<NULL>", style: %Style{fg: :dark_gray, modifiers: [:bold]})])], "NULL"}
+      detail.detected_type == nil ->
+        {[Line.new([Span.new("<NULL>", style: %Style{fg: :dark_gray, modifiers: [:bold]})])],
+         "NULL"}
 
       detail.detected_type == :uuid ->
-        {Strata.Formatter.wrap_text_lines(detail.formatted_value, max_line_w, %Style{fg: :cyan}), "UUID"}
+        {Strata.Formatter.wrap_text_lines(detail.formatted_value, max_line_w, %Style{fg: :cyan}),
+         "UUID"}
 
       true ->
-        {Strata.Formatter.wrap_text_lines(detail.formatted_value, max_line_w, %Style{fg: :white}), to_string(detail.detected_type)}
+        {Strata.Formatter.wrap_text_lines(detail.formatted_value, max_line_w, %Style{fg: :white}),
+         to_string(detail.detected_type)}
     end
   end
 
@@ -657,7 +700,8 @@ defmodule Strata.UI.Renderer do
           tbl = Map.get(app, :selected_table)
 
           if tbl,
-            do: "TABLE: #{tbl} (#{row_count_label} - #{more_status})#{sort_badge}#{filter_badge}#{dirty_badge}#{loading_badge}#{mode_badge}",
+            do:
+              "TABLE: #{tbl} (#{row_count_label} - #{more_status})#{sort_badge}#{filter_badge}#{dirty_badge}#{loading_badge}#{mode_badge}",
             else: "TABLE VIEW#{loading_badge}#{mode_badge}"
 
         :query_view ->
@@ -758,14 +802,16 @@ defmodule Strata.UI.Renderer do
     local_col_idx = (c_idx || 0) - col_offset
 
     selected_row =
-      if grid.mode == :selecting and string_rows != [] and local_row_idx >= 0 and local_row_idx < length(string_rows) do
+      if grid.mode == :selecting and string_rows != [] and local_row_idx >= 0 and
+           local_row_idx < length(string_rows) do
         local_row_idx
       else
         nil
       end
 
     selected_col =
-      if grid.mode == :selecting and visible_columns != [] and local_col_idx >= 0 and local_col_idx < length(visible_columns) do
+      if grid.mode == :selecting and visible_columns != [] and local_col_idx >= 0 and
+           local_col_idx < length(visible_columns) do
         local_col_idx
       else
         nil
@@ -776,17 +822,32 @@ defmodule Strata.UI.Renderer do
 
     scroll_indicator =
       cond do
-        has_left_cols? and has_right_cols? -> " [◀ Cols #{col_offset + 1}-#{col_offset + visible_col_count}/#{length(grid.columns)} ▶]"
-        has_left_cols? -> " [◀ Cols #{col_offset + 1}-#{col_offset + visible_col_count}/#{length(grid.columns)}]"
-        has_right_cols? -> " [Cols 1-#{visible_col_count}/#{length(grid.columns)} ▶]"
-        true -> ""
+        has_left_cols? and has_right_cols? ->
+          " [◀ Cols #{col_offset + 1}-#{col_offset + visible_col_count}/#{length(grid.columns)} ▶]"
+
+        has_left_cols? ->
+          " [◀ Cols #{col_offset + 1}-#{col_offset + visible_col_count}/#{length(grid.columns)}]"
+
+        has_right_cols? ->
+          " [Cols 1-#{visible_col_count}/#{length(grid.columns)} ▶]"
+
+        true ->
+          ""
       end
 
     title_with_indicator = title <> scroll_indicator
 
     highlight_sym = ""
-    highlight_st = if grid.mode == :selecting, do: %ExRatatui.Style{fg: :black, bg: :yellow}, else: %ExRatatui.Style{}
-    cell_highlight_st = if grid.mode == :selecting, do: %ExRatatui.Style{fg: :white, bg: :green, modifiers: [:bold]}, else: %ExRatatui.Style{}
+
+    highlight_st =
+      if grid.mode == :selecting,
+        do: %ExRatatui.Style{fg: :black, bg: :yellow},
+        else: %ExRatatui.Style{}
+
+    cell_highlight_st =
+      if grid.mode == :selecting,
+        do: %ExRatatui.Style{fg: :white, bg: :green, modifiers: [:bold]},
+        else: %ExRatatui.Style{}
 
     widget = %ExRatatui.Widgets.Table{
       header: if(string_header != [], do: string_header, else: nil),
@@ -970,7 +1031,9 @@ defmodule Strata.UI.Renderer do
       %{rect: rect, items: items, selected_index: idx, search: search} ->
         dd_rect = to_rect(rect)
         clear_w = %ExRatatui.Widgets.Clear{}
-        title = if search != "", do: " ↕ Sort: #{search}▏ ", else: " ↕ Sort by Column (Enter/Esc) "
+
+        title =
+          if search != "", do: " ↕ Sort: #{search}▏ ", else: " ↕ Sort by Column (Enter/Esc) "
 
         list_items =
           if items == [] do
@@ -1015,7 +1078,9 @@ defmodule Strata.UI.Renderer do
 
         if anchor do
           grid = Map.get(app, :datagrid_state) || DataGrid.new()
-          search = String.downcase(String.trim(to_string(Map.get(app, :filter_dropdown_search, ""))))
+
+          search =
+            String.downcase(String.trim(to_string(Map.get(app, :filter_dropdown_search, ""))))
 
           items =
             case kind do
@@ -1249,8 +1314,10 @@ defmodule Strata.UI.Renderer do
               else: %ExRatatui.Style{fg: :yellow, bg: :dark_gray, modifiers: [:bold]}
 
           [
-            {%ExRatatui.Widgets.Paragraph{text: " #{col_str} ▾ ", style: col_style}, to_rect(col_rect)},
-            {%ExRatatui.Widgets.Paragraph{text: " #{op_label} ▾ ", style: op_style}, to_rect(op_rect)}
+            {%ExRatatui.Widgets.Paragraph{text: " #{col_str} ▾ ", style: col_style},
+             to_rect(col_rect)},
+            {%ExRatatui.Widgets.Paragraph{text: " #{op_label} ▾ ", style: op_style},
+             to_rect(op_rect)}
           ]
 
         _ ->
@@ -1274,7 +1341,8 @@ defmodule Strata.UI.Renderer do
            }, rect}
         ]
 
-      focused? and (mode == :raw or focus_part == :value) and not is_nil(Map.get(app, :filter_bar_ref)) ->
+      focused? and (mode == :raw or focus_part == :value) and
+          not is_nil(Map.get(app, :filter_bar_ref)) ->
         [
           {%ExRatatui.Widgets.TextInput{
              state: app.filter_bar_ref,
@@ -1285,9 +1353,18 @@ defmodule Strata.UI.Renderer do
 
       true ->
         raw_txt = Map.get(app, :filter_bar_text, "")
-        placeholder = if mode == :raw, do: "e.g. status = 'active' AND id > 10", else: "type value to filter..."
+
+        placeholder =
+          if mode == :raw,
+            do: "e.g. status = 'active' AND id > 10",
+            else: "type value to filter..."
+
         txt = if raw_txt == "", do: placeholder, else: raw_txt
-        style = if raw_txt == "", do: %ExRatatui.Style{fg: :dark_gray}, else: %ExRatatui.Style{fg: :white}
+
+        style =
+          if raw_txt == "",
+            do: %ExRatatui.Style{fg: :dark_gray},
+            else: %ExRatatui.Style{fg: :white}
 
         [{%ExRatatui.Widgets.Paragraph{text: txt, style: style}, rect}]
     end
@@ -1540,16 +1617,19 @@ defmodule Strata.UI.Renderer do
         match?(%Strata.UI.Components.ActionsModal{}, top) ->
           {64, max(10, min(22, length(top.items) + 4))}
 
-        match?(%Strata.UI.Components.FilterExportModal{}, top) or match?(%{type: :filter_modal}, top) or match?(%{type: :export_modal}, top) ->
+        match?(%Strata.UI.Components.FilterExportModal{}, top) or
+          match?(%{type: :filter_modal}, top) or match?(%{type: :export_modal}, top) ->
           {74, 18}
 
-        match?(%Strata.UI.Components.ConnectionModal{}, top) or match?(%{type: :connection_modal}, top) ->
+        match?(%Strata.UI.Components.ConnectionModal{}, top) or
+            match?(%{type: :connection_modal}, top) ->
           {72, 22}
 
         match?(%Strata.UI.Components.SSHModal{}, top) or match?(%{type: :ssh_modal}, top) ->
           {72, 22}
 
-        match?(%Strata.UI.Components.CellDetailModal{}, top) or match?(%{type: :cell_detail_modal}, top) ->
+        match?(%Strata.UI.Components.CellDetailModal{}, top) or
+            match?(%{type: :cell_detail_modal}, top) ->
           {76, 22}
 
         match?(%{type: :confirm_delete_connection}, top) ->
@@ -1601,7 +1681,10 @@ defmodule Strata.UI.Renderer do
               Strata.UI.Components.ConnectionModal.render(conn_modal, modal_area)
 
             %{type: :connection_modal} ->
-              Strata.UI.Components.ConnectionModal.render(Strata.UI.Components.ConnectionModal.new(), modal_area)
+              Strata.UI.Components.ConnectionModal.render(
+                Strata.UI.Components.ConnectionModal.new(),
+                modal_area
+              )
 
             %Strata.UI.Components.CellDetailModal{} = cell_modal ->
               Strata.UI.Components.CellDetailModal.render(cell_modal, modal_area)
@@ -1609,22 +1692,35 @@ defmodule Strata.UI.Renderer do
             %{type: :cell_detail_modal} = m ->
               val = Map.get(m, :content, "")
               opts = [column: Map.get(m, :column), row_index: Map.get(m, :row_index)]
-              Strata.UI.Components.CellDetailModal.render(Strata.UI.Components.CellDetailModal.new(val, opts), modal_area)
+
+              Strata.UI.Components.CellDetailModal.render(
+                Strata.UI.Components.CellDetailModal.new(val, opts),
+                modal_area
+              )
 
             %Strata.UI.Components.FilterExportModal{} = fe_modal ->
               Strata.UI.Components.FilterExportModal.render(fe_modal, modal_area)
 
             %{type: :filter_modal} ->
-              Strata.UI.Components.FilterExportModal.render(Strata.UI.Components.FilterExportModal.new(:filter), modal_area)
+              Strata.UI.Components.FilterExportModal.render(
+                Strata.UI.Components.FilterExportModal.new(:filter),
+                modal_area
+              )
 
             %{type: :export_modal} ->
-              Strata.UI.Components.FilterExportModal.render(Strata.UI.Components.FilterExportModal.new(:export), modal_area)
+              Strata.UI.Components.FilterExportModal.render(
+                Strata.UI.Components.FilterExportModal.new(:export),
+                modal_area
+              )
 
             %Strata.UI.Components.SSHModal{} = ssh_modal ->
               Strata.UI.Components.SSHModal.render(ssh_modal, modal_area)
 
             %{type: :ssh_modal} ->
-              Strata.UI.Components.SSHModal.render(Strata.UI.Components.SSHModal.new(), modal_area)
+              Strata.UI.Components.SSHModal.render(
+                Strata.UI.Components.SSHModal.new(),
+                modal_area
+              )
 
             map when is_map(map) ->
               map
@@ -1654,7 +1750,9 @@ defmodule Strata.UI.Renderer do
 
                     if focused? do
                       Line.new([
-                        Span.new(prefix <> label <> ": ", style: %Style{fg: :yellow, modifiers: [:bold]}),
+                        Span.new(prefix <> label <> ": ",
+                          style: %Style{fg: :yellow, modifiers: [:bold]}
+                        ),
                         Span.new(val, style: %Style{fg: :black, bg: :yellow, modifiers: [:bold]})
                       ])
                     else
@@ -1665,11 +1763,21 @@ defmodule Strata.UI.Renderer do
                     end
 
                   focused? ->
-                    Line.new([Span.new(prefix <> to_string(f.label), style: %Style{fg: :black, bg: :yellow, modifiers: [:bold]})])
+                    Line.new([
+                      Span.new(prefix <> to_string(f.label),
+                        style: %Style{fg: :black, bg: :yellow, modifiers: [:bold]}
+                      )
+                    ])
 
                   true ->
-                    btn_fg = if String.contains?(to_string(f.label), "Delete"), do: :red, else: :white
-                    Line.new([Span.new(prefix <> to_string(f.label), style: %Style{fg: btn_fg, modifiers: [:bold]})])
+                    btn_fg =
+                      if String.contains?(to_string(f.label), "Delete"), do: :red, else: :white
+
+                    Line.new([
+                      Span.new(prefix <> to_string(f.label),
+                        style: %Style{fg: btn_fg, modifiers: [:bold]}
+                      )
+                    ])
                 end
               end)
 
@@ -1689,8 +1797,11 @@ defmodule Strata.UI.Renderer do
 
                   hint_part =
                     case String.split(raw_content, "\n─────", parts: 2) do
-                      [_, hint] -> [Line.new([Span.new("─────" <> hint, style: %Style{fg: :dark_gray})])]
-                      _ -> []
+                      [_, hint] ->
+                        [Line.new([Span.new("─────" <> hint, style: %Style{fg: :dark_gray})])]
+
+                      _ ->
+                        []
                     end
 
                   max_mw = max(12, modal_area.width - 4)
@@ -1708,9 +1819,14 @@ defmodule Strata.UI.Renderer do
             msg when is_binary(msg) and msg != "" ->
               st =
                 cond do
-                  String.contains?(msg, ["❌", "failed", "Error"]) -> %Style{fg: :red, modifiers: [:bold]}
-                  String.contains?(msg, ["⏳", "Testing"]) -> %Style{fg: :yellow, modifiers: [:bold]}
-                  true -> %Style{fg: :green, modifiers: [:bold]}
+                  String.contains?(msg, ["❌", "failed", "Error"]) ->
+                    %Style{fg: :red, modifiers: [:bold]}
+
+                  String.contains?(msg, ["⏳", "Testing"]) ->
+                    %Style{fg: :yellow, modifiers: [:bold]}
+
+                  true ->
+                    %Style{fg: :green, modifiers: [:bold]}
                 end
 
               [Line.new([]), Line.new([Span.new("   " <> msg, style: st)])]
@@ -1744,24 +1860,33 @@ defmodule Strata.UI.Renderer do
   def to_ansi(app) do
     {width, _height} = app.window_size
 
-    header_line = "\e[1;44;37m 🗄️  Strata TUI — Database Manager \e[0m" <> String.duplicate(" ", max(0, width - 36)) <> "\n"
+    header_line =
+      "\e[1;44;37m 🗄️  Strata TUI — Database Manager \e[0m" <>
+        String.duplicate(" ", max(0, width - 36)) <> "\n"
 
     sidebar_lines =
       Sidebar.flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
       |> Enum.map_join("\n", fn n -> "  #{n.label}" end)
 
-    sidebar_text = " [🔌 CONNECTIONS]\n" <> if(sidebar_lines != "", do: sidebar_lines <> "\n", else: "  (No connections configured)\n")
+    sidebar_text =
+      " [🔌 CONNECTIONS]\n" <>
+        if(sidebar_lines != "",
+          do: sidebar_lines <> "\n",
+          else: "  (No connections configured)\n"
+        )
 
     active_tab = Enum.find(app.tabs, &(&1.id == app.active_tab_id)) || List.first(app.tabs)
     sql_text = if active_tab, do: active_tab.content, else: ""
     editor_text = " [📜 SQL EDITOR]\n  1 │ #{sql_text}\n"
 
     grid_count = if app.datagrid_state, do: length(app.datagrid_state.rows), else: 0
-    datagrid_text = " [📊 DATA GRID (#{grid_count} rows)]\n" <> if(grid_count == 0, do: "  (No data loaded)\n", else: "  #{grid_count} rows in grid\n")
+
+    datagrid_text =
+      " [📊 DATA GRID (#{grid_count} rows)]\n" <>
+        if(grid_count == 0, do: "  (No data loaded)\n", else: "  #{grid_count} rows in grid\n")
 
     footer_text = "\n\e[7m [1] Table  [2] SQL  [3] Data  [a] Add Conn  [q] Quit \e[0m"
 
     header_line <> sidebar_text <> "\n" <> editor_text <> "\n" <> datagrid_text <> footer_text
   end
 end
-

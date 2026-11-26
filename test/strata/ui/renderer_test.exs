@@ -67,7 +67,9 @@ defmodule Strata.UI.RendererTest do
 
       {modal_para, modal_rect} = List.last(widgets)
       assert is_struct(modal_rect, ExRatatui.Layout.Rect)
-      assert String.contains?(modal_para.block.title, "CONNECTION PROFILE") or String.contains?(modal_para.block.title, "Add Connection")
+
+      assert String.contains?(modal_para.block.title, "CONNECTION PROFILE") or
+               String.contains?(modal_para.block.title, "Add Connection")
     end
 
     test "renders and draws all modal types into CellSession successfully" do
@@ -102,7 +104,12 @@ defmodule Strata.UI.RendererTest do
 
       assert :ok == ExRatatui.CellSession.draw(session, App.render(query_app, frame))
 
-      conn_modal_area = Renderer.modal_area_for(App.push_modal(App.new(), Strata.UI.Components.ConnectionModal.new()), {120, 40})
+      conn_modal_area =
+        Renderer.modal_area_for(
+          App.push_modal(App.new(), Strata.UI.Components.ConnectionModal.new()),
+          {120, 40}
+        )
+
       assert conn_modal_area.width == 72
       assert conn_modal_area.height == 22
 
@@ -120,7 +127,12 @@ defmodule Strata.UI.RendererTest do
         |> DataGrid.toggle_delete_row(1)
 
       staged_app =
-        App.new(window_size: {80, 24}, active_view: :table_view, selected_table: "users", focus: :datagrid)
+        App.new(
+          window_size: {80, 24},
+          active_view: :table_view,
+          selected_table: "users",
+          focus: :datagrid
+        )
         |> Map.put(:datagrid_state, base_grid)
 
       assert :ok == ExRatatui.CellSession.draw(session, App.render(staged_app, frame))
@@ -132,7 +144,16 @@ defmodule Strata.UI.RendererTest do
       assert :ok == ExRatatui.CellSession.draw(session, App.render(editing_app, frame))
 
       loading_grid = DataGrid.new(["Status"], [["Loading..."]], loading_more: true)
-      loading_app = App.new(window_size: {80, 24}, active_view: :table_view, selected_table: "users", datagrid_state: loading_grid, throbber_step: 2)
+
+      loading_app =
+        App.new(
+          window_size: {80, 24},
+          active_view: :table_view,
+          selected_table: "users",
+          datagrid_state: loading_grid,
+          throbber_step: 2
+        )
+
       assert :ok == ExRatatui.CellSession.draw(session, App.render(loading_app, frame))
 
       # Inline Filter Bar + Toggleable Right Inspector Drawer render together cleanly in CellSession
@@ -144,10 +165,17 @@ defmodule Strata.UI.RendererTest do
 
       large_session = ExRatatui.CellSession.new(120, 40)
       large_frame = %ExRatatui.Frame{width: 120, height: 40}
-      assert :ok == ExRatatui.CellSession.draw(large_session, App.render(filter_and_inspector_app, large_frame))
+
+      assert :ok ==
+               ExRatatui.CellSession.draw(
+                 large_session,
+                 App.render(filter_and_inspector_app, large_frame)
+               )
 
       raw_filter_app = App.handle_key(filter_and_inspector_app, {:ctrl, "r"})
-      assert :ok == ExRatatui.CellSession.draw(large_session, App.render(raw_filter_app, large_frame))
+
+      assert :ok ==
+               ExRatatui.CellSession.draw(large_session, App.render(raw_filter_app, large_frame))
 
       dd_col_app = %{filter_and_inspector_app | filter_dropdown: :column, filter_dropdown_idx: 0}
       assert :ok == ExRatatui.CellSession.draw(large_session, App.render(dd_col_app, large_frame))
@@ -159,27 +187,60 @@ defmodule Strata.UI.RendererTest do
       assert :ok == ExRatatui.CellSession.draw(large_session, App.render(sp_app, large_frame))
 
       # Confirm delete connection modal renders compactly with rounded borders
-      del_modal = %{type: :confirm_delete_connection, title: "CONFIRM DELETE", profile_id: "c1", content: "\n  Delete 'c1'?"}
+      del_modal = %{
+        type: :confirm_delete_connection,
+        title: "CONFIRM DELETE",
+        profile_id: "c1",
+        content: "\n  Delete 'c1'?"
+      }
+
       del_area = Renderer.modal_area_for(App.push_modal(App.new(), del_modal), {120, 40})
       assert {del_area.width, del_area.height} == {54, 9}
-      assert :ok == ExRatatui.CellSession.draw(large_session, App.render(App.push_modal(App.new(), del_modal), large_frame))
+
+      assert :ok ==
+               ExRatatui.CellSession.draw(
+                 large_session,
+                 App.render(App.push_modal(App.new(), del_modal), large_frame)
+               )
 
       # JSON formatting + split fixed Inspector panes render cleanly in CellSession
-      json_payload = ~s({"user":{"name":"Alice","age":30,"active":true,"note":null},"tags":["admin","db"]})
+      json_payload =
+        ~s({"user":{"name":"Alice","age":30,"active":true,"note":null},"tags":["admin","db"]})
+
       {:ok, pretty_json} = Strata.Formatter.decode_json_pretty(json_payload)
       hl_lines = Strata.Formatter.highlight_json_lines(pretty_json, 32)
       assert length(hl_lines) > 4
-      assert Enum.any?(hl_lines, fn %ExRatatui.Text.Line{spans: spans} -> Enum.any?(spans, &(&1.style.fg == :cyan)) end)
 
-      json_grid = DataGrid.new(["id", "payload"], [[1, json_payload]], mode: :selecting, selected_cell: {0, 1})
-      json_insp_app = App.new(window_size: {120, 40}, active_view: :table_view, datagrid_state: json_grid) |> App.open_inspector()
-      assert :ok == ExRatatui.CellSession.draw(large_session, App.render(json_insp_app, large_frame))
+      assert Enum.any?(hl_lines, fn %ExRatatui.Text.Line{spans: spans} ->
+               Enum.any?(spans, &(&1.style.fg == :cyan))
+             end)
+
+      json_grid =
+        DataGrid.new(["id", "payload"], [[1, json_payload]],
+          mode: :selecting,
+          selected_cell: {0, 1}
+        )
+
+      json_insp_app =
+        App.new(window_size: {120, 40}, active_view: :table_view, datagrid_state: json_grid)
+        |> App.open_inspector()
+
+      assert :ok ==
+               ExRatatui.CellSession.draw(large_session, App.render(json_insp_app, large_frame))
 
       # Inspector scrollbar reaches bottom cleanly when scrolled to max_value_scroll
       long_json = Jason.encode!(%{"items" => Enum.map(1..20, &%{"id" => &1})})
-      long_grid = DataGrid.new(["id", "payload"], [[1, long_json]], mode: :selecting, selected_cell: {0, 1})
-      bottom_app = App.new(window_size: {120, 30}, active_view: :table_view, datagrid_state: long_grid) |> App.open_inspector()
-      %{inspector_area: ia} = Renderer.datagrid_areas(Renderer.layout({120, 30}, :table_view).datagrid, bottom_app)
+
+      long_grid =
+        DataGrid.new(["id", "payload"], [[1, long_json]], mode: :selecting, selected_cell: {0, 1})
+
+      bottom_app =
+        App.new(window_size: {120, 30}, active_view: :table_view, datagrid_state: long_grid)
+        |> App.open_inspector()
+
+      %{inspector_area: ia} =
+        Renderer.datagrid_areas(Renderer.layout({120, 30}, :table_view).datagrid, bottom_app)
+
       insp_data = Renderer.inspector_data(bottom_app, long_grid, long_grid.rows, ia)
       scrolled_bottom = %{bottom_app | inspector_value_scroll: insp_data.max_value_scroll}
 
@@ -193,7 +254,10 @@ defmodule Strata.UI.RendererTest do
       huge_str = String.duplicate("a", 5_000)
       span = Strata.Formatter.format_cell_span(huge_str, 20)
       assert String.length(span.content) == 24
-      assert Strata.Formatter.sanitize_cell_preview(<<1234::32, 0::96>>, 10) == "000004d2-0000-0000-0000-000000000000"
+
+      assert Strata.Formatter.sanitize_cell_preview(<<1234::32, 0::96>>, 10) ==
+               "000004d2-0000-0000-0000-000000000000"
+
       assert Strata.Formatter.sanitize_cell_preview("short", 20) == "short"
       assert String.length(Strata.Formatter.sanitize_cell_preview(%{"big" => huge_str}, 16)) == 20
 

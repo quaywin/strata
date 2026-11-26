@@ -18,8 +18,20 @@ defmodule Strata.UI.Components.SidebarTest do
             type: :schema,
             expanded?: true,
             children: [
-              %{id: "conn_pg_public_users", label: "users", type: :table, expanded?: false, children: []},
-              %{id: "conn_pg_public_orders", label: "orders", type: :table, expanded?: false, children: []}
+              %{
+                id: "conn_pg_public_users",
+                label: "users",
+                type: :table,
+                expanded?: false,
+                children: []
+              },
+              %{
+                id: "conn_pg_public_orders",
+                label: "orders",
+                type: :table,
+                expanded?: false,
+                children: []
+              }
             ]
           }
         ]
@@ -86,12 +98,18 @@ defmodule Strata.UI.Components.SidebarTest do
 
       # Right expands collapsed node
       app = Sidebar.handle_key(app, :right)
-      visible_after_expand = Sidebar.flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
+
+      visible_after_expand =
+        Sidebar.flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
+
       assert Enum.any?(visible_after_expand, &(&1.id == "conn_sqlite_logs"))
 
       # Left collapses expanded node
       app = Sidebar.handle_key(app, :left)
-      visible_after_collapse = Sidebar.flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
+
+      visible_after_collapse =
+        Sidebar.flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
+
       refute Enum.any?(visible_after_collapse, &(&1.id == "conn_sqlite_logs"))
 
       # Right on expanded node or leaf node switches focus to datagrid
@@ -104,7 +122,8 @@ defmodule Strata.UI.Components.SidebarTest do
       assert app_leaf_focused.focus == :datagrid
     end
 
-    test "pressing enter on table node loads table data, auto-focuses datagrid, and switches to Table View", %{app: app} do
+    test "pressing enter on table node loads table data, auto-focuses datagrid, and switches to Table View",
+         %{app: app} do
       app = Map.put(app, :selected_tree_node_id, "conn_pg_public_users")
       app = Sidebar.handle_key(app, :enter)
 
@@ -124,19 +143,37 @@ defmodule Strata.UI.Components.SidebarTest do
     test "collapses and expands all tree nodes with c and o keys", %{app: app} do
       # Press 'c' to collapse all
       app_collapsed = Sidebar.handle_key(app, "c")
-      visible_c = Sidebar.flatten_visible_nodes(app_collapsed.sidebar_nodes, app_collapsed.selected_tree_node_id)
+
+      visible_c =
+        Sidebar.flatten_visible_nodes(
+          app_collapsed.sidebar_nodes,
+          app_collapsed.selected_tree_node_id
+        )
+
       assert length(visible_c) == 2
 
       # Press 'o' to expand all
       app_expanded = Sidebar.handle_key(app_collapsed, "o")
-      visible_o = Sidebar.flatten_visible_nodes(app_expanded.sidebar_nodes, app_expanded.selected_tree_node_id)
+
+      visible_o =
+        Sidebar.flatten_visible_nodes(
+          app_expanded.sidebar_nodes,
+          app_expanded.selected_tree_node_id
+        )
+
       assert length(visible_o) > length(visible_c)
     end
 
     test "space key toggles node expansion", %{app: app} do
       app_sqlite = Map.put(app, :selected_tree_node_id, "conn_sqlite")
       app_toggled = Sidebar.handle_key(app_sqlite, :space)
-      visible = Sidebar.flatten_visible_nodes(app_toggled.sidebar_nodes, app_toggled.selected_tree_node_id)
+
+      visible =
+        Sidebar.flatten_visible_nodes(
+          app_toggled.sidebar_nodes,
+          app_toggled.selected_tree_node_id
+        )
+
       assert Enum.any?(visible, &(&1.id == "conn_sqlite_logs"))
     end
   end
@@ -162,8 +199,14 @@ defmodule Strata.UI.Components.SidebarTest do
       refute Enum.any?(rendered.lines, &String.contains?(&1, "users"))
     end
 
-    test "uses compact single-column glyphs, child counts, active table star, and styled lines", %{app: app} do
-      active_app = %{app | selected_table: "users", connection_statuses: %{"conn_pg" => :connected}}
+    test "uses compact single-column glyphs, child counts, active table star, and styled lines",
+         %{app: app} do
+      active_app = %{
+        app
+        | selected_table: "users",
+          connection_statuses: %{"conn_pg" => :connected}
+      }
+
       rendered = Sidebar.render(active_app, %{x: 0, y: 0, width: 30, height: 20})
 
       assert Enum.any?(rendered.lines, &String.contains?(&1, "● Prod Postgres"))
@@ -173,7 +216,12 @@ defmodule Strata.UI.Components.SidebarTest do
     end
 
     test "render_viewport slices and styles only visible items matching full render", %{app: app} do
-      scrolled_app = %{app | sidebar_scroll_offset: 1, selected_tree_node_id: "conn_pg_public_users"}
+      scrolled_app = %{
+        app
+        | sidebar_scroll_offset: 1,
+          selected_tree_node_id: "conn_pg_public_users"
+      }
+
       area = %{x: 0, y: 0, width: 30, height: 5}
 
       full = Sidebar.render(scrolled_app, area)

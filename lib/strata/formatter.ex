@@ -108,8 +108,6 @@ defmodule Strata.Formatter do
 
   def sanitize_cell_preview(val, _max_chars), do: sanitize_cell(val)
 
-
-
   @doc """
   Decodes `value` into `{:ok, pretty_json_string}` if it is a map/list, valid JSON string,
   or double-encoded JSON string; otherwise returns `:error`.
@@ -171,7 +169,9 @@ defmodule Strata.Formatter do
   @doc """
   Wraps plain text into `ExRatatui.Text.Line` structs fitting within `max_width`.
   """
-  @spec wrap_text_lines(String.t(), pos_integer(), ExRatatui.Style.t()) :: [ExRatatui.Text.Line.t()]
+  @spec wrap_text_lines(String.t(), pos_integer(), ExRatatui.Style.t()) :: [
+          ExRatatui.Text.Line.t()
+        ]
   def wrap_text_lines(text, max_width, style \\ %Style{fg: :white}) when is_binary(text) do
     w = max(4, max_width)
 
@@ -188,7 +188,8 @@ defmodule Strata.Formatter do
   end
 
   defp tokenize_json_line(line_str) do
-    regex = ~r/(\"(?:\\.|[^\"\\])*\"\s*:|\"(?:\\.|[^\"\\])*\"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\btrue\b|\bfalse\b|\bnull\b|[{}\[\],:]|\s+|[^\s{}\[\],:\"]+)/
+    regex =
+      ~r/(\"(?:\\.|[^\"\\])*\"\s*:|\"(?:\\.|[^\"\\])*\"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\btrue\b|\bfalse\b|\bnull\b|[{}\[\],:]|\s+|[^\s{}\[\],:\"]+)/
 
     Regex.scan(regex, line_str)
     |> Enum.map(fn [tok | _] ->
@@ -222,6 +223,7 @@ defmodule Strata.Formatter do
 
       if style == nil do
         [_, key_part, sep_part] = Regex.run(~r/^(\"(?:\\.|[^\"\\])*\")(\s*:)$/, tok)
+
         [
           %Span{content: key_part, style: %Style{fg: :cyan, modifiers: [:bold]}},
           %Span{content: sep_part, style: %Style{fg: :white}}
@@ -336,7 +338,8 @@ defmodule Strata.Formatter do
   Uses Erlang C NIF Base.encode16 for maximum speed.
   """
   def format_uuid(<<_::128>> = uuid_bin) do
-    <<a::binary-size(8), b::binary-size(4), c::binary-size(4), d::binary-size(4), e::binary-size(12)>> =
+    <<a::binary-size(8), b::binary-size(4), c::binary-size(4), d::binary-size(4),
+      e::binary-size(12)>> =
       Base.encode16(uuid_bin, case: :lower)
 
     "#{a}-#{b}-#{c}-#{d}-#{e}"
@@ -349,7 +352,10 @@ defmodule Strata.Formatter do
     |> Enum.chunk_every(16)
     |> Enum.map_join("\n", fn chunk ->
       hex = Enum.map_join(chunk, " ", &String.pad_leading(Integer.to_string(&1, 16), 2, "0"))
-      ascii = Enum.map_join(chunk, "", fn b -> if b >= 32 and b <= 126, do: <<b::utf8>>, else: "." end)
+
+      ascii =
+        Enum.map_join(chunk, "", fn b -> if b >= 32 and b <= 126, do: <<b::utf8>>, else: "." end)
+
       "#{String.pad_trailing(hex, 48)}  |#{ascii}|"
     end)
   end

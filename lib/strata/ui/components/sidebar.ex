@@ -77,7 +77,9 @@ defmodule Strata.UI.Components.Sidebar do
 
       profiles
       |> Task.async_stream(
-        fn profile -> Strata.SchemaInspector.fetch_tree_nodes(profile, expanded?: default_expanded?) end,
+        fn profile ->
+          Strata.SchemaInspector.fetch_tree_nodes(profile, expanded?: default_expanded?)
+        end,
         max_concurrency: 4,
         timeout: 10_000,
         on_timeout: :kill_task
@@ -88,7 +90,9 @@ defmodule Strata.UI.Components.Sidebar do
           node
 
         {{:exit, _reason}, profile} ->
-          Strata.SchemaInspector.fetch_fallback_nodes(profile, :timeout, expanded?: default_expanded?)
+          Strata.SchemaInspector.fetch_fallback_nodes(profile, :timeout,
+            expanded?: default_expanded?
+          )
       end)
     end
   end
@@ -169,6 +173,7 @@ defmodule Strata.UI.Components.Sidebar do
     case key do
       :down ->
         next_node = get_neighbor(visible, sel_id, 1)
+
         if next_node do
           new_idx = Enum.find_index(visible, &(&1.id == next_node.id)) || 0
           viewport_h = sidebar_viewport_h(app)
@@ -181,6 +186,7 @@ defmodule Strata.UI.Components.Sidebar do
 
       :up ->
         prev_node = get_neighbor(visible, sel_id, -1)
+
         if prev_node do
           new_idx = Enum.find_index(visible, &(&1.id == prev_node.id)) || 0
           viewport_h = sidebar_viewport_h(app)
@@ -195,7 +201,8 @@ defmodule Strata.UI.Components.Sidebar do
         selected_item = Enum.find(visible, &(&1.id == sel_id))
 
         cond do
-          selected_item && selected_item.has_children? == true and selected_item.expanded? != true ->
+          (selected_item && selected_item.has_children? == true) and
+              selected_item.expanded? != true ->
             update_node_expanded(app, sel_id, true)
 
           true ->
@@ -206,7 +213,7 @@ defmodule Strata.UI.Components.Sidebar do
         selected_item = Enum.find(visible, &(&1.id == sel_id))
 
         cond do
-          selected_item && selected_item.expanded? and selected_item.has_children? ->
+          (selected_item && selected_item.expanded?) and selected_item.has_children? ->
             update_node_expanded(app, sel_id, false)
 
           selected_item && selected_item.depth > 0 ->
@@ -256,7 +263,10 @@ defmodule Strata.UI.Components.Sidebar do
             %{app | status_message: "No connection selected to edit"}
 
           profile ->
-            Strata.UI.App.push_modal(app, Strata.UI.Components.ConnectionModal.new(profile: profile))
+            Strata.UI.App.push_modal(
+              app,
+              Strata.UI.Components.ConnectionModal.new(profile: profile)
+            )
         end
 
       k when k in ["d", "D"] ->
@@ -321,7 +331,13 @@ defmodule Strata.UI.Components.Sidebar do
     end
 
     nodes = load_nodes()
-    first_id = case List.first(nodes) do nil -> nil; n -> n.id end
+
+    first_id =
+      case List.first(nodes) do
+        nil -> nil
+        n -> n.id
+      end
+
     name = (profile && profile.name) || profile_id
 
     %{
@@ -397,10 +413,18 @@ defmodule Strata.UI.Components.Sidebar do
             case fetch_table_chunk(profile, table_name, 0, 100, schema: schema) do
               {:ok, cols, data_rows} ->
                 has_more = length(data_rows) == 100
-                Strata.DataStore.put_table_cache(profile.id, schema, table_name, cols, data_rows, has_more)
 
-                {cols, data_rows,
-                 "[DB] Loaded table '#{table_name}' (#{length(data_rows)} rows)", has_more}
+                Strata.DataStore.put_table_cache(
+                  profile.id,
+                  schema,
+                  table_name,
+                  cols,
+                  data_rows,
+                  has_more
+                )
+
+                {cols, data_rows, "[DB] Loaded table '#{table_name}' (#{length(data_rows)} rows)",
+                 has_more}
 
               {:error, reason} ->
                 msg = if is_binary(reason), do: reason, else: inspect(reason)
@@ -408,10 +432,16 @@ defmodule Strata.UI.Components.Sidebar do
             end
         end
       else
-        {["info"], [["No database connection configured"]], "No database connection configured", false}
+        {["info"], [["No database connection configured"]], "No database connection configured",
+         false}
       end
 
-    grid = Strata.UI.Components.DataGrid.new(columns, rows, batch_size: 100, has_more: has_more, loading_more: false)
+    grid =
+      Strata.UI.Components.DataGrid.new(columns, rows,
+        batch_size: 100,
+        has_more: has_more,
+        loading_more: false
+      )
 
     app
     |> Strata.UI.App.switch_view(:table_view)
@@ -425,8 +455,11 @@ defmodule Strata.UI.Components.Sidebar do
   @doc """
   Builds a safely quoted `table` or `schema.table` reference for the given driver.
   """
-  def qualify_table(driver, table_name, nil), do: Strata.Adapter.quote_identifier(driver, table_name)
-  def qualify_table(driver, table_name, ""), do: Strata.Adapter.quote_identifier(driver, table_name)
+  def qualify_table(driver, table_name, nil),
+    do: Strata.Adapter.quote_identifier(driver, table_name)
+
+  def qualify_table(driver, table_name, ""),
+    do: Strata.Adapter.quote_identifier(driver, table_name)
 
   def qualify_table(driver, table_name, schema) do
     case Strata.Adapter.normalize_driver(driver) do
@@ -469,7 +502,8 @@ defmodule Strata.UI.Components.Sidebar do
           ""
       end
 
-    sql = "SELECT * FROM #{qualified_table}#{where_sql}#{order_sql} LIMIT #{limit} OFFSET #{offset};"
+    sql =
+      "SELECT * FROM #{qualified_table}#{where_sql}#{order_sql} LIMIT #{limit} OFFSET #{offset};"
 
     case Strata.ConnectionWorker.execute_query_for_profile(profile, sql) do
       {:ok, %{columns: cols, rows: rows}} ->
@@ -624,8 +658,16 @@ defmodule Strata.UI.Components.Sidebar do
     alias ExRatatui.Text.{Line, Span}
 
     indent = String.duplicate("  ", item.depth)
-    is_hint? = is_binary(item.id) and (String.ends_with?(item.id, "_loading") or String.ends_with?(item.id, "_status") or item.id == "add_conn_hint")
-    count_suffix = if item.type == :schema and not is_hint? and (item[:child_count] || 0) > 0, do: " (#{item.child_count})", else: ""
+
+    is_hint? =
+      is_binary(item.id) and
+        (String.ends_with?(item.id, "_loading") or String.ends_with?(item.id, "_status") or
+           item.id == "add_conn_hint")
+
+    count_suffix =
+      if item.type == :schema and not is_hint? and (item[:child_count] || 0) > 0,
+        do: " (#{item.child_count})",
+        else: ""
 
     active_table? =
       item.type in [:table, :view] and is_binary(active_table) and item.label == active_table and
@@ -656,11 +698,15 @@ defmodule Strata.UI.Components.Sidebar do
           end
 
         :view ->
-          l_style = if active_table?, do: %Style{fg: :green, modifiers: [:bold]}, else: %Style{fg: :blue}
+          l_style =
+            if active_table?, do: %Style{fg: :green, modifiers: [:bold]}, else: %Style{fg: :blue}
+
           {"◫", %Style{fg: :cyan}, l_style}
 
         :table ->
-          l_style = if active_table?, do: %Style{fg: :green, modifiers: [:bold]}, else: %Style{fg: :white}
+          l_style =
+            if active_table?, do: %Style{fg: :green, modifiers: [:bold]}, else: %Style{fg: :white}
+
           {"▦", %Style{fg: if(active_table?, do: :green, else: :dark_gray)}, l_style}
 
         _ ->
@@ -674,8 +720,14 @@ defmodule Strata.UI.Components.Sidebar do
         Span.new("#{indent}#{glyph} ", style: glyph_style),
         Span.new(item.label, style: label_style)
       ] ++
-        if(count_suffix != "", do: [Span.new(count_suffix, style: %Style{fg: :dark_gray})], else: []) ++
-        if(active_mark != "", do: [Span.new(active_mark, style: %Style{fg: :yellow, modifiers: [:bold]})], else: [])
+        if(count_suffix != "",
+          do: [Span.new(count_suffix, style: %Style{fg: :dark_gray})],
+          else: []
+        ) ++
+        if(active_mark != "",
+          do: [Span.new(active_mark, style: %Style{fg: :yellow, modifiers: [:bold]})],
+          else: []
+        )
 
     {plain, Line.new(spans)}
   end
@@ -695,7 +747,8 @@ defmodule Strata.UI.Components.Sidebar do
     end
   end
 
-  defp update_node_expanded(%{sidebar_nodes: nodes} = app, target_id, expanded?) when is_binary(target_id) do
+  defp update_node_expanded(%{sidebar_nodes: nodes} = app, target_id, expanded?)
+       when is_binary(target_id) do
     updated_nodes = map_tree(nodes, target_id, fn n -> Map.put(n, :expanded?, expanded?) end)
     %{app | sidebar_nodes: updated_nodes}
   end
@@ -705,7 +758,7 @@ defmodule Strata.UI.Components.Sidebar do
   defp toggle_node_expanded(%{sidebar_nodes: nodes} = app, target_id) when is_binary(target_id) do
     updated_nodes =
       map_tree(nodes, target_id, fn n ->
-        Map.update(n, :expanded?, true, &not &1)
+        Map.update(n, :expanded?, true, &(not &1))
       end)
 
     %{app | sidebar_nodes: updated_nodes}
@@ -747,11 +800,14 @@ defmodule Strata.UI.Components.Sidebar do
 
   defp ensure_visible(current_offset, selected_idx, viewport_h, total) do
     max_offset = max(0, total - viewport_h)
+
     cond do
       selected_idx < current_offset ->
         max(0, selected_idx)
+
       selected_idx >= current_offset + viewport_h ->
         min(selected_idx - viewport_h + 1, max_offset)
+
       true ->
         min(current_offset, max_offset)
     end

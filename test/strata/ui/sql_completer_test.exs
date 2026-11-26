@@ -90,8 +90,10 @@ defmodule Strata.UI.Components.SQLCompleterTest do
     test "replaces prefix with suggestion insert text and updates cursor" do
       content = "SELECT * FROM us"
       suggestion = %{label: "users", type: :table, insert_text: "users"}
-      
-      {updated_content, new_cursor} = SQLCompleter.apply_completion(content, {0, 16}, suggestion, "us")
+
+      {updated_content, new_cursor} =
+        SQLCompleter.apply_completion(content, {0, 16}, suggestion, "us")
+
       assert updated_content == "SELECT * FROM users"
       assert new_cursor == {0, 19}
     end

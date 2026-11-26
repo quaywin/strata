@@ -7,7 +7,7 @@ defmodule Strata.UI.Components.SQLEditorTest do
   describe "SQL Syntax Highlighting" do
     test "tokenize identifies SQL keywords" do
       tokens = SQLEditor.tokenize("SELECT * FROM users WHERE status = 'active';")
-      
+
       types = Enum.map(tokens, & &1.type)
       assert :keyword in types
       assert :identifier in types
@@ -107,7 +107,7 @@ defmodule Strata.UI.Components.SQLEditorTest do
   describe "SQLEditor App Integration" do
     test "handle_key typing updates active tab content" do
       app = App.new(focus: :editor)
-      
+
       app = SQLEditor.handle_key(app, {:char, "A"})
       active = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
       assert String.contains?(active.content, "A")

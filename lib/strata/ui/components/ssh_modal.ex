@@ -68,7 +68,10 @@ defmodule Strata.UI.Components.SSHModal do
 
     base =
       if profile do
-        auth_type = if profile.identity_file && profile.identity_file != "", do: :private_key, else: :password
+        auth_type =
+          if profile.identity_file && profile.identity_file != "",
+            do: :private_key,
+            else: :password
 
         %__MODULE__{
           id: profile.id,
@@ -209,7 +212,8 @@ defmodule Strata.UI.Components.SSHModal do
 
   # Text entry handling
   def handle_key(%__MODULE__{focused_field: field} = modal, key)
-      when is_binary(key) and field in [:name, :host, :port, :username, :password, :identity_file, :passphrase] do
+      when is_binary(key) and
+             field in [:name, :host, :port, :username, :password, :identity_file, :passphrase] do
     val = Map.get(modal, field)
 
     if field == :port do
@@ -275,10 +279,26 @@ defmodule Strata.UI.Components.SSHModal do
       %{label: "Host", key: :host, value: modal.host, type: :text},
       %{label: "Port", key: :port, value: Integer.to_string(modal.port), type: :text},
       %{label: "Username", key: :username, value: modal.username, type: :text},
-      %{label: "Auth Type", key: :auth_type, value: Atom.to_string(modal.auth_type), type: :select, options: Enum.map(@auth_types, &Atom.to_string/1)},
-      %{label: "Password", key: :password, value: String.duplicate("*", String.length(modal.password)), type: :password},
+      %{
+        label: "Auth Type",
+        key: :auth_type,
+        value: Atom.to_string(modal.auth_type),
+        type: :select,
+        options: Enum.map(@auth_types, &Atom.to_string/1)
+      },
+      %{
+        label: "Password",
+        key: :password,
+        value: String.duplicate("*", String.length(modal.password)),
+        type: :password
+      },
       %{label: "Private Key Path", key: :identity_file, value: modal.identity_file, type: :text},
-      %{label: "Passphrase", key: :passphrase, value: String.duplicate("*", String.length(modal.passphrase)), type: :password},
+      %{
+        label: "Passphrase",
+        key: :passphrase,
+        value: String.duplicate("*", String.length(modal.passphrase)),
+        type: :password
+      },
       %{label: "[⚡ Test SSH]", key: :test_button, type: :button},
       %{label: "[ Save (Ctrl+S) ]", key: :save_button, type: :button}
     ]
@@ -288,7 +308,9 @@ defmodule Strata.UI.Components.SSHModal do
         do: [%{label: "[🗑 Delete SSH]", key: :delete_button, type: :button}],
         else: []
 
-    fields = base_fields ++ delete_field ++ [%{label: "[ Cancel (Esc) ]", key: :cancel_button, type: :button}]
+    fields =
+      base_fields ++
+        delete_field ++ [%{label: "[ Cancel (Esc) ]", key: :cancel_button, type: :button}]
 
     %{
       title: "SSH PROFILE SETUP",

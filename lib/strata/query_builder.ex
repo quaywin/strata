@@ -243,7 +243,8 @@ defmodule Strata.QueryBuilder do
         {:ok, {"SELECT * FROM #{qualified_table}#{order_sql}#{limit_sql};", []}}
 
       {:ok, where_sql, params} ->
-        {:ok, {"SELECT * FROM #{qualified_table} WHERE #{where_sql}#{order_sql}#{limit_sql};", params}}
+        {:ok,
+         {"SELECT * FROM #{qualified_table} WHERE #{where_sql}#{order_sql}#{limit_sql};", params}}
 
       {:error, _} = err ->
         err
@@ -255,7 +256,12 @@ defmodule Strata.QueryBuilder do
     {:ok, trimmed, []}
   end
 
-  defp build_filter_where(driver, columns, %{mode: :builder, column: col, op: op, value: val}, sample_row) do
+  defp build_filter_where(
+         driver,
+         columns,
+         %{mode: :builder, column: col, op: op, value: val},
+         sample_row
+       ) do
     norm_driver = Adapter.normalize_driver(driver)
     val_str = to_string(val || "")
 
@@ -274,7 +280,8 @@ defmodule Strata.QueryBuilder do
     end
   end
 
-  defp build_all_columns_where(_driver, _norm_driver, [], _op, _val_str), do: {:error, :no_columns}
+  defp build_all_columns_where(_driver, _norm_driver, [], _op, _val_str),
+    do: {:error, :no_columns}
 
   defp build_all_columns_where(driver, norm_driver, columns, op, val_str) do
     if String.trim(val_str) == "" and op not in [:is_null, :is_not_null] do
@@ -309,7 +316,11 @@ defmodule Strata.QueryBuilder do
               end
             end)
 
-          params = if norm_driver == :postgres, do: [pattern], else: List.duplicate(pattern, length(columns))
+          params =
+            if norm_driver == :postgres,
+              do: [pattern],
+              else: List.duplicate(pattern, length(columns))
+
           {:ok, "(" <> Enum.join(clauses, " OR ") <> ")", params}
       end
     end
@@ -327,7 +338,9 @@ defmodule Strata.QueryBuilder do
           {:ok, "", []}
         else
           casted = cast_as_text(norm_driver, q_col)
-          {:ok, "#{casted} #{like_keyword(norm_driver)} #{ph} ESCAPE '!'", ["%" <> escape_like(val_str) <> "%"]}
+
+          {:ok, "#{casted} #{like_keyword(norm_driver)} #{ph} ESCAPE '!'",
+           ["%" <> escape_like(val_str) <> "%"]}
         end
 
       :starts_with ->
@@ -337,7 +350,9 @@ defmodule Strata.QueryBuilder do
           {:ok, "", []}
         else
           casted = cast_as_text(norm_driver, q_col)
-          {:ok, "#{casted} #{like_keyword(norm_driver)} #{ph} ESCAPE '!'", [escape_like(val_str) <> "%"]}
+
+          {:ok, "#{casted} #{like_keyword(norm_driver)} #{ph} ESCAPE '!'",
+           [escape_like(val_str) <> "%"]}
         end
 
       op when op in [:=, :!=, :>, :<, :>=, :<=] ->

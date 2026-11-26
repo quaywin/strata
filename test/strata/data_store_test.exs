@@ -43,7 +43,15 @@ defmodule Strata.DataStoreTest do
     assert :miss = DataStore.get_table_cache("conn_b", nil, "users")
 
     # Append deduplicates existing rows
-    assert :ok = DataStore.append_table_cache("conn_a", nil, "users", [[2, "Bob"], [3, "Charlie"]], false)
+    assert :ok =
+             DataStore.append_table_cache(
+               "conn_a",
+               nil,
+               "users",
+               [[2, "Bob"], [3, "Charlie"]],
+               false
+             )
+
     assert {:ok, updated} = DataStore.get_table_cache("conn_a", nil, "users")
     assert updated.rows == [[1, "Alice"], [2, "Bob"], [3, "Charlie"]]
     assert updated.has_more == false

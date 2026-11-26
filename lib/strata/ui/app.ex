@@ -250,7 +250,8 @@ defmodule Strata.UI.App do
             selection_bounds: nil
         }
 
-        {:noreply, new_state, render?: had_sel?, pointer: pointer_for_position(new_state, col, row)}
+        {:noreply, new_state,
+         render?: had_sel?, pointer: pointer_for_position(new_state, col, row)}
 
       kind_str == "drag" and left_button? ->
         latest_drag = drain_drag_events({:drag, col, row})
@@ -281,7 +282,13 @@ defmodule Strata.UI.App do
 
               base_state =
                 if state.text_selection != nil do
-                  %{state | drag_anchor: nil, text_selection: nil, selection_screen: nil, selection_bounds: nil}
+                  %{
+                    state
+                    | drag_anchor: nil,
+                      text_selection: nil,
+                      selection_screen: nil,
+                      selection_bounds: nil
+                  }
                 else
                   state
                 end
@@ -293,7 +300,8 @@ defmodule Strata.UI.App do
               {handle_mouse(state, event), true}
           end
 
-        {:noreply, new_state, render?: should_render?, pointer: pointer_for_position(new_state, col, row)}
+        {:noreply, new_state,
+         render?: should_render?, pointer: pointer_for_position(new_state, col, row)}
     end
   end
 
@@ -387,7 +395,10 @@ defmodule Strata.UI.App do
     end
   end
 
-  defp handle_drag_select(%__MODULE__{drag_anchor: {ax, ay} = anchor, text_selection: existing} = state, {:drag, x, y})
+  defp handle_drag_select(
+         %__MODULE__{drag_anchor: {ax, ay} = anchor, text_selection: existing} = state,
+         {:drag, x, y}
+       )
        when {x, y} != {ax, ay} or not is_nil(existing) do
     state =
       if is_nil(state.selection_screen) and Map.get(state, :terminal, false) do
@@ -417,7 +428,11 @@ defmodule Strata.UI.App do
   defp handle_drag_select(state, _event), do: state
 
   defp handle_drag_finish(
-         %__MODULE__{text_selection: {anchor, drag_end}, selection_screen: %{} = screen, selection_bounds: %{} = bounds} = state,
+         %__MODULE__{
+           text_selection: {anchor, drag_end},
+           selection_screen: %{} = screen,
+           selection_bounds: %{} = bounds
+         } = state,
          _x,
          _y
        ) do
@@ -468,13 +483,15 @@ defmodule Strata.UI.App do
 
     offline_or_loading? =
       selected_item != nil and is_binary(selected_item.id) and
-        (String.ends_with?(selected_item.id, "_status") or String.ends_with?(selected_item.id, "_loading"))
+        (String.ends_with?(selected_item.id, "_status") or
+           String.ends_with?(selected_item.id, "_loading"))
 
     cond do
       key == :f5 ->
         {:noreply, refresh_selected_connection_schema_async(state)}
 
-      key in ["r", "R"] and (is_nil(selected_item) or selected_item.type in [:connection, :schema]) ->
+      key in ["r", "R"] and
+          (is_nil(selected_item) or selected_item.type in [:connection, :schema]) ->
         {:noreply, refresh_selected_connection_schema_async(state)}
 
       offline_or_loading? and key in [:enter, :space, " "] ->
@@ -482,7 +499,11 @@ defmodule Strata.UI.App do
 
       selected_item && selected_item.type in [:table, :view] ->
         refresh? = key in ["r", "R"]
-        {:noreply, load_table_async(%{state | sidebar_filter_active: false}, selected_item.label, refresh: refresh?)}
+
+        {:noreply,
+         load_table_async(%{state | sidebar_filter_active: false}, selected_item.label,
+           refresh: refresh?
+         )}
 
       true ->
         {:noreply, Sidebar.handle_key(state, key)}
@@ -506,7 +527,11 @@ defmodule Strata.UI.App do
       :enter ->
         visible = Sidebar.visible_nodes(state)
         selected = Enum.find(visible, &(&1.id == state.selected_tree_node_id))
-        target = if selected && selected.type in [:table, :view], do: selected, else: Enum.find(visible, &(&1.type in [:table, :view]))
+
+        target =
+          if selected && selected.type in [:table, :view],
+            do: selected,
+            else: Enum.find(visible, &(&1.type in [:table, :view]))
 
         if target do
           state
@@ -548,6 +573,7 @@ defmodule Strata.UI.App do
         state
         |> cancel_inline_edit_if_active()
         |> set_focus(:sidebar)
+
       rel_y = y - layout.sidebar.y - 1
       visible = Sidebar.visible_nodes(state)
       sidebar_viewport_h = max(1, layout.sidebar.height - 2)
@@ -559,16 +585,29 @@ defmodule Strata.UI.App do
         target_item = Enum.at(visible, target_idx)
 
         new_offset =
-          clamp_sidebar_offset(sidebar_scroll_top, target_idx, sidebar_viewport_h, length(visible))
+          clamp_sidebar_offset(
+            sidebar_scroll_top,
+            target_idx,
+            sidebar_viewport_h,
+            length(visible)
+          )
 
-        state = %{state | selected_tree_node_id: target_item.id, sidebar_scroll_offset: new_offset}
+        state = %{
+          state
+          | selected_tree_node_id: target_item.id,
+            sidebar_scroll_offset: new_offset
+        }
 
         if target_item.type in [:table, :view] do
           load_table_async(state, target_item.label)
         else
           updated = Sidebar.handle_key(state, :enter)
-          updated_visible = Sidebar.flatten_visible_nodes(updated.sidebar_nodes, updated.selected_tree_node_id)
-          updated_sel_idx = Enum.find_index(updated_visible, &(&1.id == updated.selected_tree_node_id)) || 0
+
+          updated_visible =
+            Sidebar.flatten_visible_nodes(updated.sidebar_nodes, updated.selected_tree_node_id)
+
+          updated_sel_idx =
+            Enum.find_index(updated_visible, &(&1.id == updated.selected_tree_node_id)) || 0
 
           final_offset =
             clamp_sidebar_offset(
@@ -608,7 +647,8 @@ defmodule Strata.UI.App do
     {:noreply, %{state | sidebar_nodes: nodes, selected_tree_node_id: first_id}}
   end
 
-  def handle_info({:connection_schema_loaded, profile_id, new_node}, state) when is_binary(profile_id) do
+  def handle_info({:connection_schema_loaded, profile_id, new_node}, state)
+      when is_binary(profile_id) do
     updated_nodes = upsert_connection_node(state.sidebar_nodes, profile_id, new_node)
 
     first_id =
@@ -636,7 +676,9 @@ defmodule Strata.UI.App do
 
     if grid && grid.loading_more do
       timer = Process.send_after(self(), :throbber_tick, 80)
-      {:noreply, %{state | throbber_step: rem((state.throbber_step || 0) + 1, 64), throbber_timer: timer}}
+
+      {:noreply,
+       %{state | throbber_step: rem((state.throbber_step || 0) + 1, 64), throbber_timer: timer}}
     else
       {:noreply, %{state | throbber_timer: nil}, render?: false}
     end
@@ -706,7 +748,10 @@ defmodule Strata.UI.App do
     {:noreply, state, render?: false}
   end
 
-  def handle_info({:table_schema_loaded, _req_id, profile_id, schema, table_name, {:ok, schema_info}}, state) do
+  def handle_info(
+        {:table_schema_loaded, _req_id, profile_id, schema, table_name, {:ok, schema_info}},
+        state
+      ) do
     Strata.DataStore.put_schema_cache(profile_id, schema, table_name, schema_info)
 
     state =
@@ -751,7 +796,8 @@ defmodule Strata.UI.App do
               state
               | datagrid_state: struct_grid,
                 structure_restore_grid: restore_grid,
-                status_message: "Structure view '#{table_name}' (#{length(schema_info.rows)} columns)"
+                status_message:
+                  "Structure view '#{table_name}' (#{length(schema_info.rows)} columns)"
             }
 
           {:error, reason} ->
@@ -923,7 +969,8 @@ defmodule Strata.UI.App do
           %{
             state
             | datagrid_state: grid,
-              status_message: "Filter applied (#{length(rows)} rows): #{where_clause} #{order_by_clause}"
+              status_message:
+                "Filter applied (#{length(rows)} rows): #{where_clause} #{order_by_clause}"
           }
 
         {:error, reason} ->
@@ -953,7 +1000,8 @@ defmodule Strata.UI.App do
 
   def handle_info({:table_chunk_loaded, table_name, _offset, result}, state) do
     state =
-      if state.active_view == :table_view and state.selected_table == table_name and state.datagrid_state do
+      if state.active_view == :table_view and state.selected_table == table_name and
+           state.datagrid_state do
         grid = state.datagrid_state
 
         case result do
@@ -1067,8 +1115,14 @@ defmodule Strata.UI.App do
     updated_children =
       Enum.map(Map.get(new_node, :children, []), fn child ->
         case Map.get(old_children_by_id, child.id) do
-          nil -> child
-          old_child -> %{child | expanded?: Map.get(old_child, :expanded?, Map.get(child, :expanded?, false))}
+          nil ->
+            child
+
+          old_child ->
+            %{
+              child
+              | expanded?: Map.get(old_child, :expanded?, Map.get(child, :expanded?, false))
+            }
         end
       end)
 
@@ -1083,7 +1137,10 @@ defmodule Strata.UI.App do
         state
         |> switch_view(:query_view)
         |> Map.put(:datagrid_state, grid)
-        |> Map.put(:status_message, "⚡ Query executed successfully (#{length(rows)} rows in #{elapsed}ms)")
+        |> Map.put(
+          :status_message,
+          "⚡ Query executed successfully (#{length(rows)} rows in #{elapsed}ms)"
+        )
 
       {:error, reason} ->
         msg = if is_binary(reason), do: reason, else: inspect(reason)
@@ -1135,7 +1192,10 @@ defmodule Strata.UI.App do
   defp map_ex_ratatui_key(code, modifiers) do
     modifiers = modifiers || []
     ctrl? = "control" in modifiers or "Ctrl" in modifiers or "ctrl" in modifiers
-    super? = "super" in modifiers or "meta" in modifiers or "Super" in modifiers or "Meta" in modifiers
+
+    super? =
+      "super" in modifiers or "meta" in modifiers or "Super" in modifiers or "Meta" in modifiers
+
     shift? = "shift" in modifiers or "Shift" in modifiers
 
     cond do
@@ -1148,26 +1208,65 @@ defmodule Strata.UI.App do
       code in ["back_tab", "BackTab"] or (shift? and code in ["tab", "Tab"]) ->
         :shift_tab
 
-      code in ["up", "Up"] -> :up
-      code in ["down", "Down"] -> :down
-      code in ["left", "Left"] -> :left
-      code in ["right", "Right"] -> :right
-      code in ["tab", "Tab"] -> :tab
-      code in ["enter", "Enter"] -> :enter
-      code in ["esc", "escape", "Esc", "Escape"] -> :esc
-      code in ["backspace", "Backspace"] -> :backspace
-      code in ["delete", "Delete"] -> :delete
-      code in ["home", "Home"] -> :home
-      code in ["end", "End"] -> :end
-      code in ["page_up", "PageUp", "pageup"] -> :page_up
-      code in ["page_down", "PageDown", "pagedown"] -> :page_down
-      code in ["f1", "F1"] -> :f1
-      code in ["f2", "F2"] -> :f2
-      code in ["f3", "F3"] -> :f3
-      code in ["f5", "F5"] -> :f5
-      code in ["f6", "F6"] -> :f6
-      is_binary(code) and String.length(code) == 1 -> code
-      true -> :unknown
+      code in ["up", "Up"] ->
+        :up
+
+      code in ["down", "Down"] ->
+        :down
+
+      code in ["left", "Left"] ->
+        :left
+
+      code in ["right", "Right"] ->
+        :right
+
+      code in ["tab", "Tab"] ->
+        :tab
+
+      code in ["enter", "Enter"] ->
+        :enter
+
+      code in ["esc", "escape", "Esc", "Escape"] ->
+        :esc
+
+      code in ["backspace", "Backspace"] ->
+        :backspace
+
+      code in ["delete", "Delete"] ->
+        :delete
+
+      code in ["home", "Home"] ->
+        :home
+
+      code in ["end", "End"] ->
+        :end
+
+      code in ["page_up", "PageUp", "pageup"] ->
+        :page_up
+
+      code in ["page_down", "PageDown", "pagedown"] ->
+        :page_down
+
+      code in ["f1", "F1"] ->
+        :f1
+
+      code in ["f2", "F2"] ->
+        :f2
+
+      code in ["f3", "F3"] ->
+        :f3
+
+      code in ["f5", "F5"] ->
+        :f5
+
+      code in ["f6", "F6"] ->
+        :f6
+
+      is_binary(code) and String.length(code) == 1 ->
+        code
+
+      true ->
+        :unknown
     end
   end
 
@@ -1188,7 +1287,12 @@ defmodule Strata.UI.App do
     default_grid = DataGrid.new([], [])
 
     nodes = Sidebar.load_nodes()
-    first_id = case List.first(nodes) do nil -> nil; n -> n.id end
+
+    first_id =
+      case List.first(nodes) do
+        nil -> nil
+        n -> n.id
+      end
 
     base = %__MODULE__{
       active_view: :table_view,
@@ -1271,7 +1375,8 @@ defmodule Strata.UI.App do
         |> Map.put(:datagrid_state, grid)
         |> Map.put(:status_message, "No database connection configured")
 
-      not refresh? and match?({:ok, _}, Strata.DataStore.get_table_cache(profile.id, schema, table_name)) ->
+      not refresh? and
+          match?({:ok, _}, Strata.DataStore.get_table_cache(profile.id, schema, table_name)) ->
         {:ok, entry} = Strata.DataStore.get_table_cache(profile.id, schema, table_name)
 
         grid =
@@ -1288,7 +1393,10 @@ defmodule Strata.UI.App do
         |> Map.put(:selected_schema, schema)
         |> Map.put(:table_request_id, req_id)
         |> Map.put(:datagrid_state, grid)
-        |> Map.put(:status_message, "[Cache] Loaded table '#{table_name}' (#{length(entry.rows)} rows)")
+        |> Map.put(
+          :status_message,
+          "[Cache] Loaded table '#{table_name}' (#{length(entry.rows)} rows)"
+        )
 
       true ->
         if refresh? do
@@ -1309,12 +1417,21 @@ defmodule Strata.UI.App do
 
         if Strata.DataStore.get_schema_cache(profile.id, schema, table_name) == :miss do
           Task.start(fn ->
-            schema_res = Strata.SchemaInspector.fetch_table_schema(profile, table_name, schema: schema)
-            send(caller, {:table_schema_loaded, req_id, profile.id, schema, table_name, schema_res})
+            schema_res =
+              Strata.SchemaInspector.fetch_table_schema(profile, table_name, schema: schema)
+
+            send(
+              caller,
+              {:table_schema_loaded, req_id, profile.id, schema, table_name, schema_res}
+            )
           end)
         end
 
-        loading_grid = DataGrid.new(["Status"], [["⏳ Loading '#{table_name}'..."]], has_more: false, loading_more: true)
+        loading_grid =
+          DataGrid.new(["Status"], [["⏳ Loading '#{table_name}'..."]],
+            has_more: false,
+            loading_more: true
+          )
 
         app
         |> switch_view(:table_view)
@@ -1493,7 +1610,8 @@ defmodule Strata.UI.App do
             {profile, schema} = Sidebar.resolve_selection_context(app)
             schema = schema || app.selected_schema
 
-            if app.active_view == :table_view and grid.view_mode == :data and is_binary(app.selected_table) and
+            if app.active_view == :table_view and grid.view_mode == :data and
+                 is_binary(app.selected_table) and
                  profile != nil do
               req_id = System.unique_integer([:positive])
               caller = self()
@@ -1516,7 +1634,11 @@ defmodule Strata.UI.App do
                            sample_row: sample_row
                          ) do
                       {:ok, {sql, params}} ->
-                        case Strata.ConnectionWorker.execute_query_for_profile(profile, sql, params) do
+                        case Strata.ConnectionWorker.execute_query_for_profile(
+                               profile,
+                               sql,
+                               params
+                             ) do
                           {:ok, %{columns: cols, rows: rows}} -> {:ok, cols, rows}
                           {:error, reason} -> {:error, reason}
                         end
@@ -1616,8 +1738,8 @@ defmodule Strata.UI.App do
           {:builder, selected_col, :contains, app.filter_bar_text || ""}
 
         true ->
-          {app.filter_bar_mode || :builder, app.filter_bar_col || "* All", app.filter_bar_op || :contains,
-           app.filter_bar_text || ""}
+          {app.filter_bar_mode || :builder, app.filter_bar_col || "* All",
+           app.filter_bar_op || :contains, app.filter_bar_text || ""}
       end
 
     ref = app.filter_bar_ref || ExRatatui.text_input_new()
@@ -1650,7 +1772,9 @@ defmodule Strata.UI.App do
   Falls back to opening the Filter Bar when called from Browsing mode.
   """
   @spec filter_by_selected_cell(t()) :: t()
-  def filter_by_selected_cell(%__MODULE__{datagrid_state: %DataGrid{mode: :selecting, view_mode: :data} = grid} = app)
+  def filter_by_selected_cell(
+        %__MODULE__{datagrid_state: %DataGrid{mode: :selecting, view_mode: :data} = grid} = app
+      )
       when grid.columns != [] do
     {r, c} = grid.selected_cell
     eff_rows = DataGrid.effective_rows(grid)
@@ -1802,7 +1926,11 @@ defmodule Strata.UI.App do
 
       k when is_binary(k) and app.filter_dropdown == :column ->
         if String.length(k) == 1 do
-          %{app | filter_dropdown_search: (app.filter_dropdown_search || "") <> k, filter_dropdown_idx: 0}
+          %{
+            app
+            | filter_dropdown_search: (app.filter_dropdown_search || "") <> k,
+              filter_dropdown_idx: 0
+          }
         else
           app
         end
@@ -1828,7 +1956,8 @@ defmodule Strata.UI.App do
       | filter_bar_col: val,
         filter_dropdown: nil,
         filter_dropdown_search: "",
-        filter_bar_focus_part: if(app.filter_bar_op in [:is_null, :is_not_null], do: :op, else: :value)
+        filter_bar_focus_part:
+          if(app.filter_bar_op in [:is_null, :is_not_null], do: :op, else: :value)
     }
   end
 
@@ -1843,7 +1972,12 @@ defmodule Strata.UI.App do
   end
 
   defp cycle_filter_part(%{filter_bar_mode: :raw} = app, _delta) do
-    %{app | filter_bar_focused: false, filter_dropdown: nil, status_message: "Grid focus (press [f] to edit filter)"}
+    %{
+      app
+      | filter_bar_focused: false,
+        filter_dropdown: nil,
+        status_message: "Grid focus (press [f] to edit filter)"
+    }
   end
 
   defp cycle_filter_part(app, delta) do
@@ -1916,7 +2050,8 @@ defmodule Strata.UI.App do
 
         trimmed = String.trim(raw)
 
-        if trimmed == "" and (app.filter_bar_mode == :raw or app.filter_bar_op not in [:is_null, :is_not_null]) do
+        if trimmed == "" and
+             (app.filter_bar_mode == :raw or app.filter_bar_op not in [:is_null, :is_not_null]) do
           clear_table_filter(app)
         else
           app
@@ -1929,7 +2064,11 @@ defmodule Strata.UI.App do
         if is_integer(app.filter_history_idx) do
           step_filter_history(app, -1)
         else
-          %{app | filter_bar_focused: false, status_message: "Grid focus (press [f] to edit filter)"}
+          %{
+            app
+            | filter_bar_focused: false,
+              status_message: "Grid focus (press [f] to edit filter)"
+          }
         end
 
       :up ->
@@ -1979,7 +2118,8 @@ defmodule Strata.UI.App do
 
       case new_idx do
         nil ->
-          if app.filter_bar_ref, do: ExRatatui.text_input_set_value(app.filter_bar_ref, draft.text)
+          if app.filter_bar_ref,
+            do: ExRatatui.text_input_set_value(app.filter_bar_ref, draft.text)
 
           %{
             app
@@ -1993,7 +2133,9 @@ defmodule Strata.UI.App do
 
         idx ->
           entry = Enum.at(entries, idx)
-          if app.filter_bar_ref, do: ExRatatui.text_input_set_value(app.filter_bar_ref, entry.text)
+
+          if app.filter_bar_ref,
+            do: ExRatatui.text_input_set_value(app.filter_bar_ref, entry.text)
 
           %{
             app
@@ -2026,7 +2168,12 @@ defmodule Strata.UI.App do
         %{mode: :raw, raw_where: val, summary: val}
       else
         op_lbl = Strata.QueryBuilder.operator_label(op)
-        summary = if op in [:is_null, :is_not_null], do: "#{col} #{op_lbl}", else: "#{col} #{op_lbl} #{val}"
+
+        summary =
+          if op in [:is_null, :is_not_null],
+            do: "#{col} #{op_lbl}",
+            else: "#{col} #{op_lbl} #{val}"
+
         %{mode: :builder, column: col, op: op, value: val, summary: summary}
       end
 
@@ -2043,7 +2190,11 @@ defmodule Strata.UI.App do
       qualified = Sidebar.qualify_table(profile.driver, table_name, schema)
       sample_row = List.first(grid.rows) || []
 
-      case Strata.QueryBuilder.build_filter_select(profile.driver, qualified, grid.columns, filter_spec,
+      case Strata.QueryBuilder.build_filter_select(
+             profile.driver,
+             qualified,
+             grid.columns,
+             filter_spec,
              order_by: grid.sort_by,
              sample_row: sample_row
            ) do
@@ -2083,7 +2234,12 @@ defmodule Strata.UI.App do
 
       existing = Map.get(app.filter_history || %{}, table_key, [])
       updated = [entry | Enum.reject(existing, &(&1 == entry))] |> Enum.take(10)
-      %{app | filter_history: Map.put(app.filter_history || %{}, table_key, updated), filter_history_idx: nil}
+
+      %{
+        app
+        | filter_history: Map.put(app.filter_history || %{}, table_key, updated),
+          filter_history_idx: nil
+      }
     end
   end
 
@@ -2127,7 +2283,13 @@ defmodule Strata.UI.App do
   """
   @spec toggle_inspector(t()) :: t()
   def toggle_inspector(%__MODULE__{inspector_open: open?} = app) do
-    %{app | inspector_open: not open?, focus: :datagrid, inspector_value_scroll: 0, inspector_summary_scroll: 0}
+    %{
+      app
+      | inspector_open: not open?,
+        focus: :datagrid,
+        inspector_value_scroll: 0,
+        inspector_summary_scroll: 0
+    }
   end
 
   @doc """
@@ -2135,14 +2297,21 @@ defmodule Strata.UI.App do
   """
   @spec open_inspector(t()) :: t()
   def open_inspector(%__MODULE__{} = app) do
-    %{app | inspector_open: true, focus: :datagrid, inspector_value_scroll: 0, inspector_summary_scroll: 0}
+    %{
+      app
+      | inspector_open: true,
+        focus: :datagrid,
+        inspector_value_scroll: 0,
+        inspector_summary_scroll: 0
+    }
   end
 
   @doc """
   Dismisses open grid drawers/bars cleanly on `Esc` from browsing mode.
   """
   @spec dismiss_grid_overlays(t()) :: t()
-  def dismiss_grid_overlays(%__MODULE__{inspector_open: true} = app), do: %{app | inspector_open: false}
+  def dismiss_grid_overlays(%__MODULE__{inspector_open: true} = app),
+    do: %{app | inspector_open: false}
 
   def dismiss_grid_overlays(%__MODULE__{filter_bar_open: true} = app),
     do: %{app | filter_bar_open: false, filter_bar_focused: false, filter_dropdown: nil}
@@ -2282,7 +2451,8 @@ defmodule Strata.UI.App do
     |> execute_actions_modal_item(:clear_sort)
   end
 
-  defp select_sort_picker_item(app, %{kind: :column, col_idx: col_idx}) when is_integer(col_idx) do
+  defp select_sort_picker_item(app, %{kind: :column, col_idx: col_idx})
+       when is_integer(col_idx) do
     app
     |> Map.put(:sort_picker_open, false)
     |> Map.put(:sort_picker_search, "")
@@ -2315,7 +2485,11 @@ defmodule Strata.UI.App do
           |> String.graphemes()
           |> Enum.each(&ExRatatui.text_input_handle_key(app.filter_bar_ref, &1))
 
-          %{app | filter_bar_text: ExRatatui.text_input_get_value(app.filter_bar_ref), filter_history_idx: nil}
+          %{
+            app
+            | filter_bar_text: ExRatatui.text_input_get_value(app.filter_bar_ref),
+              filter_history_idx: nil
+          }
         else
           %{app | filter_bar_text: (app.filter_bar_text || "") <> clean, filter_history_idx: nil}
         end
@@ -2326,7 +2500,8 @@ defmodule Strata.UI.App do
       app.focus == :editor ->
         SQLEditor.handle_key(app, {:paste, text})
 
-      app.focus == :datagrid and match?(%DataGrid{mode: :selecting, view_mode: :data}, app.datagrid_state) and
+      app.focus == :datagrid and
+        match?(%DataGrid{mode: :selecting, view_mode: :data}, app.datagrid_state) and
           app.datagrid_state.columns != [] ->
         grid = app.datagrid_state
         {r, c} = grid.selected_cell
@@ -2339,14 +2514,14 @@ defmodule Strata.UI.App do
         %{
           app
           | datagrid_state: updated_grid,
-            status_message: "📋 Pasted into #{col_name} (#{DataGrid.dirty_count(updated_grid)} pending · Ctrl+S commit)"
+            status_message:
+              "📋 Pasted into #{col_name} (#{DataGrid.dirty_count(updated_grid)} pending · Ctrl+S commit)"
         }
 
       true ->
         app
     end
   end
-
 
   def paste_text(app, _), do: app
 
@@ -2384,7 +2559,8 @@ defmodule Strata.UI.App do
         app
         | datagrid_state: %{grid | mode: :selecting, editing_cell: {r, c}},
           inline_input_ref: ref,
-          status_message: "Editing #{col_name} (row #{r + 1}) · Enter stage · Ctrl+N NULL · Esc cancel"
+          status_message:
+            "Editing #{col_name} (row #{r + 1}) · Enter stage · Ctrl+N NULL · Esc cancel"
       }
     else
       app
@@ -2397,7 +2573,10 @@ defmodule Strata.UI.App do
   Handles keystrokes while inline cell editing (`grid.editing_cell`) is active.
   """
   @spec handle_inline_edit_key(t(), term()) :: t()
-  def handle_inline_edit_key(%__MODULE__{datagrid_state: %DataGrid{editing_cell: {r, c}} = grid} = app, key) do
+  def handle_inline_edit_key(
+        %__MODULE__{datagrid_state: %DataGrid{editing_cell: {r, c}} = grid} = app,
+        key
+      ) do
     case key do
       :esc ->
         %{
@@ -2414,7 +2593,8 @@ defmodule Strata.UI.App do
           app
           | datagrid_state: updated_grid,
             inline_input_ref: nil,
-            status_message: "Staged NULL (#{DataGrid.dirty_count(updated_grid)} pending · Ctrl+S commit)"
+            status_message:
+              "Staged NULL (#{DataGrid.dirty_count(updated_grid)} pending · Ctrl+S commit)"
         }
 
       {:ctrl, "v"} ->
@@ -2440,7 +2620,8 @@ defmodule Strata.UI.App do
           app
           | datagrid_state: updated_grid,
             inline_input_ref: nil,
-            status_message: "Staged change (#{DataGrid.dirty_count(updated_grid)} pending · Ctrl+S commit · Ctrl+Z revert)"
+            status_message:
+              "Staged change (#{DataGrid.dirty_count(updated_grid)} pending · Ctrl+S commit · Ctrl+Z revert)"
         }
 
       other_key ->
@@ -2516,7 +2697,10 @@ defmodule Strata.UI.App do
               send(caller, {:commit_finished, req_id, profile.id, schema, tbl, res})
             end)
 
-            %{app | status_message: "⏳ Committing #{length(statements)} statement(s) to '#{tbl}'..."}
+            %{
+              app
+              | status_message: "⏳ Committing #{length(statements)} statement(s) to '#{tbl}'..."
+            }
 
           {:error, reason} ->
             %{app | status_message: "❌ Cannot build commit SQL: #{inspect(reason)}"}
@@ -2530,13 +2714,26 @@ defmodule Strata.UI.App do
     grid = app.datagrid_state || DataGrid.new()
 
     case action_id do
-      :commit_changes -> commit_staged_changes(app)
-      :revert_changes -> %{app | datagrid_state: DataGrid.revert_staged_changes(grid), status_message: "Reverted all staged changes"}
-      :edit_cell -> start_inline_edit(app)
-      :insert_row -> %{app | datagrid_state: DataGrid.insert_blank_row(grid)}
+      :commit_changes ->
+        commit_staged_changes(app)
+
+      :revert_changes ->
+        %{
+          app
+          | datagrid_state: DataGrid.revert_staged_changes(grid),
+            status_message: "Reverted all staged changes"
+        }
+
+      :edit_cell ->
+        start_inline_edit(app)
+
+      :insert_row ->
+        %{app | datagrid_state: DataGrid.insert_blank_row(grid)}
+
       :delete_row ->
         {r, _c} = grid.selected_cell
         %{app | datagrid_state: DataGrid.toggle_delete_row(grid, r)}
+
       :sort_col ->
         if grid.mode == :selecting do
           {_r, c} = grid.selected_cell
@@ -2544,6 +2741,7 @@ defmodule Strata.UI.App do
         else
           open_sort_picker(app)
         end
+
       :clear_sort ->
         cleared = %{grid | sort_by: nil}
 
@@ -2557,18 +2755,42 @@ defmodule Strata.UI.App do
           true ->
             %{app | datagrid_state: cleared, status_message: "Cleared sort"}
         end
-      :toggle_structure -> toggle_structure_view(app)
-      :filter_table -> open_filter_bar(app)
-      :filter_by_cell -> filter_by_selected_cell(app)
-      :clear_filter -> clear_table_filter(app)
-      :toggle_inspector -> toggle_inspector(app)
-      :export_data -> push_modal(app, FilterExportModal.new(:export))
-      :copy_cell -> handle_key(%{app | focus: :datagrid, datagrid_state: %{grid | mode: :selecting}}, "c")
-      :copy_row -> handle_key(%{app | focus: :datagrid, datagrid_state: %{grid | mode: :selecting}}, "Y")
-      :next_page -> %{app | datagrid_state: DataGrid.next_page(grid)}
-      :prev_page -> %{app | datagrid_state: DataGrid.prev_page(grid)}
-      :refresh -> refresh_active_table(app)
-      _ -> app
+
+      :toggle_structure ->
+        toggle_structure_view(app)
+
+      :filter_table ->
+        open_filter_bar(app)
+
+      :filter_by_cell ->
+        filter_by_selected_cell(app)
+
+      :clear_filter ->
+        clear_table_filter(app)
+
+      :toggle_inspector ->
+        toggle_inspector(app)
+
+      :export_data ->
+        push_modal(app, FilterExportModal.new(:export))
+
+      :copy_cell ->
+        handle_key(%{app | focus: :datagrid, datagrid_state: %{grid | mode: :selecting}}, "c")
+
+      :copy_row ->
+        handle_key(%{app | focus: :datagrid, datagrid_state: %{grid | mode: :selecting}}, "Y")
+
+      :next_page ->
+        %{app | datagrid_state: DataGrid.next_page(grid)}
+
+      :prev_page ->
+        %{app | datagrid_state: DataGrid.prev_page(grid)}
+
+      :refresh ->
+        refresh_active_table(app)
+
+      _ ->
+        app
     end
   end
 
@@ -2774,7 +2996,10 @@ defmodule Strata.UI.App do
             app
             |> switch_view(:query_view)
             |> Map.put(:datagrid_state, grid)
-            |> Map.put(:status_message, "⚡ Query executed successfully (#{length(rows)} rows in #{elapsed}ms)")
+            |> Map.put(
+              :status_message,
+              "⚡ Query executed successfully (#{length(rows)} rows in #{elapsed}ms)"
+            )
 
           {:error, reason} ->
             msg = if is_binary(reason), do: reason, else: inspect(reason)
@@ -2908,7 +3133,11 @@ defmodule Strata.UI.App do
                 end
 
                 {_popped, app} = pop_modal(app)
-                %{app | status_message: "Saved SSH profile '#{ssh_profile.name}' (#{ssh_profile.id})"}
+
+                %{
+                  app
+                  | status_message: "Saved SSH profile '#{ssh_profile.name}' (#{ssh_profile.id})"
+                }
 
               {:delete, modal} ->
                 try do
@@ -3071,7 +3300,12 @@ defmodule Strata.UI.App do
 
     app =
       if updated_grid.selected_cell != prev_cell do
-        %{app | datagrid_state: updated_grid, inspector_value_scroll: 0, inspector_summary_scroll: 0}
+        %{
+          app
+          | datagrid_state: updated_grid,
+            inspector_value_scroll: 0,
+            inspector_summary_scroll: 0
+        }
       else
         %{app | datagrid_state: updated_grid}
       end
@@ -3153,7 +3387,10 @@ defmodule Strata.UI.App do
   Locks background scrolling and supports outside-click dismissal when modals are open.
   """
   @spec handle_mouse(t(), any()) :: t()
-  def handle_mouse(%__MODULE__{modals: [%ActionsModal{} = am | rest]} = app, {:scroll, dir, _x, _y}) do
+  def handle_mouse(
+        %__MODULE__{modals: [%ActionsModal{} = am | rest]} = app,
+        {:scroll, dir, _x, _y}
+      ) do
     max_idx = max(0, length(am.items) - 1)
 
     next =
@@ -3182,7 +3419,10 @@ defmodule Strata.UI.App do
     end
   end
 
-  def handle_mouse(%__MODULE__{filter_dropdown: kind, window_size: ws, active_view: active_view} = app, {:scroll, dir, _x, _y})
+  def handle_mouse(
+        %__MODULE__{filter_dropdown: kind, window_size: ws, active_view: active_view} = app,
+        {:scroll, dir, _x, _y}
+      )
       when kind in [:column, :op] do
     layout = Renderer.layout(ws, active_view)
     dd = Renderer.filter_dropdown_data(app, layout.datagrid)
@@ -3201,8 +3441,10 @@ defmodule Strata.UI.App do
     end
   end
 
-
-  def handle_mouse(%__MODULE__{sort_picker_open: true, window_size: ws, active_view: active_view} = app, {:scroll, dir, _x, _y}) do
+  def handle_mouse(
+        %__MODULE__{sort_picker_open: true, window_size: ws, active_view: active_view} = app,
+        {:scroll, dir, _x, _y}
+      ) do
     layout = Renderer.layout(ws, active_view)
     sp = Renderer.sort_picker_data(app, layout.datagrid)
     items = (sp && sp.items) || []
@@ -3220,15 +3462,19 @@ defmodule Strata.UI.App do
     end
   end
 
-
-  def handle_mouse(%__MODULE__{sort_picker_open: true, window_size: ws, active_view: active_view} = app, {:click, x, y}) do
+  def handle_mouse(
+        %__MODULE__{sort_picker_open: true, window_size: ws, active_view: active_view} = app,
+        {:click, x, y}
+      ) do
     layout = Renderer.layout(ws, active_view)
     sp = Renderer.sort_picker_data(app, layout.datagrid)
 
     if sp != nil and inside_area?(x, y, sp.rect) do
       rel_y = y - sp.rect.y - 1
       inner_h = max(1, sp.rect.height - 2)
-      scroll_top = if length(sp.items) > inner_h, do: max(0, sp.selected_index - inner_h + 1), else: 0
+
+      scroll_top =
+        if length(sp.items) > inner_h, do: max(0, sp.selected_index - inner_h + 1), else: 0
 
       if rel_y >= 0 and rel_y < inner_h do
         select_sort_picker_item(app, Enum.at(sp.items, scroll_top + rel_y))
@@ -3240,7 +3486,10 @@ defmodule Strata.UI.App do
     end
   end
 
-  def handle_mouse(%__MODULE__{window_size: ws, active_view: active_view} = app, {:scroll, dir, x, y}) do
+  def handle_mouse(
+        %__MODULE__{window_size: ws, active_view: active_view} = app,
+        {:scroll, dir, x, y}
+      ) do
     layout = Renderer.layout(ws, active_view)
 
     cond do
@@ -3276,7 +3525,8 @@ defmodule Strata.UI.App do
         %{app | sidebar_scroll_offset: new_offset, selected_tree_node_id: new_selected_id}
 
       layout.datagrid.height > 0 and inside_area?(x, y, layout.datagrid) ->
-        %{grid_area: grid_area, inspector_area: inspector_area} = Renderer.datagrid_areas(layout.datagrid, app)
+        %{grid_area: grid_area, inspector_area: inspector_area} =
+          Renderer.datagrid_areas(layout.datagrid, app)
 
         if inspector_area != nil and inside_area?(x, y, inspector_area) do
           if dir in [:up, :scroll_up, :down, :scroll_down] do
@@ -3320,8 +3570,16 @@ defmodule Strata.UI.App do
 
           if allow? do
             step = if raw_direction in [:up, :down], do: 3, else: 1
-            updated_grid = DataGrid.scroll_viewport(grid, raw_direction, vh, max_width: max_w, step: step)
-            app = %{app | datagrid_state: updated_grid, focus: :datagrid, scroll_lock: new_app_lock}
+
+            updated_grid =
+              DataGrid.scroll_viewport(grid, raw_direction, vh, max_width: max_w, step: step)
+
+            app = %{
+              app
+              | datagrid_state: updated_grid,
+                focus: :datagrid,
+                scroll_lock: new_app_lock
+            }
 
             if active_view == :table_view and raw_direction == :down and
                  DataGrid.near_bottom?(updated_grid, vh, 25) do
@@ -3339,7 +3597,6 @@ defmodule Strata.UI.App do
     end
   end
 
-
   def handle_mouse(%__MODULE__{window_size: ws, active_view: active_view} = app, {:click, x, y}) do
     layout = Renderer.layout(ws, active_view)
 
@@ -3352,6 +3609,7 @@ defmodule Strata.UI.App do
           app
           |> cancel_inline_edit_if_active()
           |> set_focus(:sidebar)
+
         rel_y = y - layout.sidebar.y - 1
 
         visible = Sidebar.visible_nodes(app)
@@ -3372,7 +3630,11 @@ defmodule Strata.UI.App do
                 length(visible)
               )
 
-            app = %{app | selected_tree_node_id: target_item.id, sidebar_scroll_offset: new_offset}
+            app = %{
+              app
+              | selected_tree_node_id: target_item.id,
+                sidebar_scroll_offset: new_offset
+            }
 
             app =
               if target_item.type in [:table, :view] do
@@ -3381,8 +3643,11 @@ defmodule Strata.UI.App do
                 Sidebar.handle_key(app, :enter)
               end
 
-            updated_visible = Sidebar.flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
-            updated_sel_idx = Enum.find_index(updated_visible, &(&1.id == app.selected_tree_node_id)) || 0
+            updated_visible =
+              Sidebar.flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
+
+            updated_sel_idx =
+              Enum.find_index(updated_visible, &(&1.id == app.selected_tree_node_id)) || 0
 
             final_offset =
               clamp_sidebar_offset(
@@ -3423,7 +3688,6 @@ defmodule Strata.UI.App do
     end
   end
 
-
   def handle_mouse(app, _event), do: app
 
   defp evaluate_scroll_lock(scroll_lock, raw_axis) do
@@ -3446,7 +3710,9 @@ defmodule Strata.UI.App do
     {allow?, new_lock}
   end
 
-  defp cancel_inline_edit_if_active(%__MODULE__{datagrid_state: %DataGrid{editing_cell: {_r, _c}} = grid} = app) do
+  defp cancel_inline_edit_if_active(
+         %__MODULE__{datagrid_state: %DataGrid{editing_cell: {_r, _c}} = grid} = app
+       ) do
     %{app | datagrid_state: %{grid | editing_cell: nil}, inline_input_ref: nil}
   end
 
@@ -3458,7 +3724,9 @@ defmodule Strata.UI.App do
     cond do
       match?(%ActionsModal{}, top) and rel_y >= 0 ->
         inner_h = max(1, modal_area.height - 2)
-        scroll_top = if length(top.items) > inner_h, do: max(0, top.selected_index - inner_h + 1), else: 0
+
+        scroll_top =
+          if length(top.items) > inner_h, do: max(0, top.selected_index - inner_h + 1), else: 0
 
         case Enum.at(top.items, scroll_top + rel_y) do
           %{id: action_id} ->
@@ -3532,7 +3800,6 @@ defmodule Strata.UI.App do
     end
   end
 
-
   defp handle_datagrid_click(app, x, y, layout) do
     app =
       app
@@ -3546,7 +3813,9 @@ defmodule Strata.UI.App do
       dd != nil and inside_area?(x, y, dd.rect) ->
         rel_y = y - dd.rect.y - 1
         inner_h = max(1, dd.rect.height - 2)
-        scroll_top = if length(dd.items) > inner_h, do: max(0, dd.selected_index - inner_h + 1), else: 0
+
+        scroll_top =
+          if length(dd.items) > inner_h, do: max(0, dd.selected_index - inner_h + 1), else: 0
 
         if rel_y >= 0 and rel_y < inner_h do
           select_filter_dropdown_item(app, Enum.at(dd.items, scroll_top + rel_y))
@@ -3566,7 +3835,14 @@ defmodule Strata.UI.App do
 
           inside_area?(x, y, rects.mode_rect) ->
             next_mode = if app.filter_bar_mode == :raw, do: :builder, else: :raw
-            %{app | filter_bar_focused: true, filter_bar_mode: next_mode, filter_bar_focus_part: :value, filter_dropdown: nil}
+
+            %{
+              app
+              | filter_bar_focused: true,
+                filter_bar_mode: next_mode,
+                filter_bar_focus_part: :value,
+                filter_dropdown: nil
+            }
 
           rects.col_rect != nil and inside_area?(x, y, rects.col_rect) ->
             if app.filter_dropdown == :column do
@@ -3585,7 +3861,12 @@ defmodule Strata.UI.App do
           true ->
             app =
               if app.filter_bar_open do
-                %{app | filter_bar_focused: true, filter_bar_focus_part: :value, filter_dropdown: nil}
+                %{
+                  app
+                  | filter_bar_focused: true,
+                    filter_bar_focus_part: :value,
+                    filter_dropdown: nil
+                }
               else
                 open_filter_bar(app)
               end
@@ -3607,7 +3888,8 @@ defmodule Strata.UI.App do
             sum_vp = max(1, insp_areas.summary_area.height - 2)
             target_col = (app.inspector_summary_scroll || 0) + rel_y
 
-            if rel_y >= 0 and rel_y < sum_vp and target_col >= 0 and target_col < length(grid.columns) do
+            if rel_y >= 0 and rel_y < sum_vp and target_col >= 0 and
+                 target_col < length(grid.columns) do
               {r_idx, _c} = grid.selected_cell
               updated_grid = %{grid | selected_cell: {r_idx, target_col}, mode: :selecting}
               %{app | datagrid_state: updated_grid, inspector_value_scroll: 0}
@@ -3676,9 +3958,14 @@ defmodule Strata.UI.App do
 
               new_scroll =
                 cond do
-                  target_row < curr_scroll -> max(0, target_row)
-                  target_row >= curr_scroll + viewport_h -> min(max_top, target_row - viewport_h + 1)
-                  true -> curr_scroll
+                  target_row < curr_scroll ->
+                    max(0, target_row)
+
+                  target_row >= curr_scroll + viewport_h ->
+                    min(max_top, target_row - viewport_h + 1)
+
+                  true ->
+                    curr_scroll
                 end
 
               updated_grid = %{
@@ -3699,7 +3986,10 @@ defmodule Strata.UI.App do
               if double_clicked? do
                 raw_cell = eff_rows |> Enum.at(target_row, []) |> Enum.at(target_col, nil)
                 col_name = Enum.at(grid.columns, target_col, "Cell")
-                cell_modal = CellDetailModal.new(raw_cell, column: col_name, row_index: target_row + 1)
+
+                cell_modal =
+                  CellDetailModal.new(raw_cell, column: col_name, row_index: target_row + 1)
+
                 push_modal(app, cell_modal)
               else
                 app

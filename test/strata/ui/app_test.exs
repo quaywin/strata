@@ -152,10 +152,12 @@ defmodule Strata.UI.AppTest do
 
     test "handles click on datagrid cell and selects correct row and column with column spacing" do
       cols = ["id", "name", "role", "status", "email"]
+
       rows = [
         [1, "Alice", "Admin", "Active", "alice@example.com"],
         [2, "Bob", "Developer", "Inactive", "bob@example.com"]
       ]
+
       grid = Strata.UI.Components.DataGrid.new(cols, rows)
 
       # Window size 120x40, table_view active (datagrid full height, x: 30, y: 0)
@@ -227,7 +229,11 @@ defmodule Strata.UI.AppTest do
 
   describe "Table view load_more_table_data & infinite scroll" do
     test "load_more_table_data triggers async Task and updates state via handle_info" do
-      grid = Strata.UI.Components.DataGrid.new(["id", "name"], [[1, "User 1"]], has_more: true, loading_more: false)
+      grid =
+        Strata.UI.Components.DataGrid.new(["id", "name"], [[1, "User 1"]],
+          has_more: true,
+          loading_more: false
+        )
 
       app =
         App.new(
@@ -243,7 +249,9 @@ defmodule Strata.UI.AppTest do
 
       # Simulate receiving async chunk loaded message
       fake_result = {:ok, ["id", "name"], [[2, "User 2"]]}
-      {:noreply, final_state} = App.handle_info({:table_chunk_loaded, "users", 1, fake_result}, updated)
+
+      {:noreply, final_state} =
+        App.handle_info({:table_chunk_loaded, "users", 1, fake_result}, updated)
 
       assert final_state.datagrid_state.loading_more == false
       assert length(final_state.datagrid_state.rows) == 2
@@ -251,7 +259,11 @@ defmodule Strata.UI.AppTest do
     end
 
     test "load_more_table_data ignores request if has_more is false or loading_more is true" do
-      grid = Strata.UI.Components.DataGrid.new(["id", "name"], [[1, "User 1"]], has_more: false, loading_more: false)
+      grid =
+        Strata.UI.Components.DataGrid.new(["id", "name"], [[1, "User 1"]],
+          has_more: false,
+          loading_more: false
+        )
 
       app =
         App.new(
@@ -271,6 +283,7 @@ defmodule Strata.UI.AppTest do
   describe "Modal scroll lock, outside-click dismiss, and async query/table flows" do
     test "locks background scroll and dismisses modal on outside click" do
       grid = Strata.UI.Components.DataGrid.new(["id"], Enum.map(1..50, &[&1]))
+
       app =
         App.new(active_view: :table_view, datagrid_state: grid, window_size: {120, 40})
         |> App.push_modal(Strata.UI.Components.FilterExportModal.new(:filter))
@@ -334,7 +347,13 @@ defmodule Strata.UI.AppTest do
               type: :schema,
               expanded?: true,
               children: [
-                %{id: "#{prof.id}_main_tbl_accounts", label: "accounts", type: :table, schema: "main", children: []}
+                %{
+                  id: "#{prof.id}_main_tbl_accounts",
+                  label: "accounts",
+                  type: :table,
+                  schema: "main",
+                  children: []
+                }
               ]
             }
           ]
@@ -351,14 +370,18 @@ defmodule Strata.UI.AppTest do
 
       # Stale response with wrong request_id is ignored
       {:noreply, still_loading} =
-        App.handle_info({:table_data_loaded, -1, prof.id, "main", "accounts", {:ok, ["id"], [[999]]}}, loading_app)
+        App.handle_info(
+          {:table_data_loaded, -1, prof.id, "main", "accounts", {:ok, ["id"], [[999]]}},
+          loading_app
+        )
 
       assert still_loading.datagrid_state.loading_more == true
 
       # Matching request_id populates grid and caches in DataStore
       {:noreply, loaded_app} =
         App.handle_info(
-          {:table_data_loaded, loading_app.table_request_id, prof.id, "main", "accounts", {:ok, ["id"], [[1], [2]]}},
+          {:table_data_loaded, loading_app.table_request_id, prof.id, "main", "accounts",
+           {:ok, ["id"], [[1], [2]]}},
           loading_app
         )
 
@@ -379,7 +402,10 @@ defmodule Strata.UI.AppTest do
       assert hd(ok_app.modals).status == :ok
 
       {:noreply, filtered_app} =
-        App.handle_info({:filter_query_finished, "id > 0", "", {:ok, %{columns: ["id"], rows: [[10]]}}}, App.new())
+        App.handle_info(
+          {:filter_query_finished, "id > 0", "", {:ok, %{columns: ["id"], rows: [[10]]}}},
+          App.new()
+        )
 
       assert filtered_app.datagrid_state.rows == [[10]]
       assert filtered_app.status_message =~ "Filter applied (1 rows)"
@@ -392,15 +418,27 @@ defmodule Strata.UI.AppTest do
 
     test "allows typing 'q' and 'Q' in editor and modals while quitting in navigation mode" do
       editor_app = App.new(focus: :editor)
-      {:noreply, after_q} = App.handle_event(%ExRatatui.Event.Key{code: "q", modifiers: []}, editor_app)
+
+      {:noreply, after_q} =
+        App.handle_event(%ExRatatui.Event.Key{code: "q", modifiers: []}, editor_app)
+
       assert hd(after_q.tabs).content == "q"
 
-      modal_app = App.new() |> App.push_modal(Strata.UI.Components.ConnectionModal.new(name: "", focused_field: :name))
-      {:noreply, after_modal_q} = App.handle_event(%ExRatatui.Event.Key{code: "q", modifiers: []}, modal_app)
+      modal_app =
+        App.new()
+        |> App.push_modal(
+          Strata.UI.Components.ConnectionModal.new(name: "", focused_field: :name)
+        )
+
+      {:noreply, after_modal_q} =
+        App.handle_event(%ExRatatui.Event.Key{code: "q", modifiers: []}, modal_app)
+
       assert hd(after_modal_q.modals).name == "q"
 
       nav_app = App.new(focus: :sidebar)
-      assert {:stop, ^nav_app} = App.handle_event(%ExRatatui.Event.Key{code: "q", modifiers: []}, nav_app)
+
+      assert {:stop, ^nav_app} =
+               App.handle_event(%ExRatatui.Event.Key{code: "q", modifiers: []}, nav_app)
     end
 
     test "opens CellDetailModal only on double-click within threshold and supports editor click cursor" do
@@ -473,7 +511,13 @@ defmodule Strata.UI.AppTest do
               type: :schema,
               expanded?: true,
               children: [
-                %{id: "#{prof.id}_main_tbl_items", label: "items", type: :table, schema: "main", children: []}
+                %{
+                  id: "#{prof.id}_main_tbl_items",
+                  label: "items",
+                  type: :table,
+                  schema: "main",
+                  children: []
+                }
               ]
             }
           ]
@@ -526,7 +570,10 @@ defmodule Strata.UI.AppTest do
       assert_receive {:commit_finished, _req_id, _pid, _schema, "items", {:ok, 1}}, 2_000
 
       assert {:ok, %{rows: [[1, "Alpha!"], [2, "Beta"]]}} =
-               Strata.ConnectionWorker.execute_query_for_profile(prof, "SELECT id, label FROM items ORDER BY id")
+               Strata.ConnectionWorker.execute_query_for_profile(
+                 prof,
+                 "SELECT id, label FROM items ORDER BY id"
+               )
 
       # Toggle Data <-> Structure view and inspect schema columns synchronously on cache miss/receive
       toggled = App.handle_key(app, :f3)
@@ -544,13 +591,27 @@ defmodule Strata.UI.AppTest do
       assert back_to_data.datagrid_state.rows == [[1, "Alpha"], [2, "Beta"]]
 
       # Clicking column header row sorts active rows in memory when offline
-      offline_app = App.new(focus: :datagrid, active_view: :query_view, datagrid_state: grid, window_size: {120, 40})
+      offline_app =
+        App.new(
+          focus: :datagrid,
+          active_view: :query_view,
+          datagrid_state: grid,
+          window_size: {120, 40}
+        )
+
       layout = Strata.UI.Renderer.layout({120, 40}, :query_view)
-      sorted_click = App.handle_mouse(offline_app, {:click, layout.datagrid.x + 2, layout.datagrid.y + 1})
+
+      sorted_click =
+        App.handle_mouse(offline_app, {:click, layout.datagrid.x + 2, layout.datagrid.y + 1})
+
       assert sorted_click.datagrid_state.sort_by == {"id", :asc}
 
       # Sort is blocked when dirty staged edits exist so row indices stay aligned
-      dirty_app = %{offline_app | datagrid_state: Strata.UI.Components.DataGrid.stage_cell_edit(grid, 0, 1, "Dirty")}
+      dirty_app = %{
+        offline_app
+        | datagrid_state: Strata.UI.Components.DataGrid.stage_cell_edit(grid, 0, 1, "Dirty")
+      }
+
       blocked_sort = App.sort_active_table_by_col(dirty_app, 0)
       assert blocked_sort.datagrid_state.sort_by == nil
       assert blocked_sort.status_message =~ "Commit (Ctrl+S) or Revert (Ctrl+Z)"
@@ -558,7 +619,10 @@ defmodule Strata.UI.AppTest do
       # Clicking grid while inline edit is open cancels editing_cell cleanly
       active_edit = App.start_inline_edit(offline_app)
       assert active_edit.datagrid_state.editing_cell != nil
-      after_click_away = App.handle_mouse(active_edit, {:click, layout.datagrid.x + 2, layout.datagrid.y + 3})
+
+      after_click_away =
+        App.handle_mouse(active_edit, {:click, layout.datagrid.x + 2, layout.datagrid.y + 3})
+
       assert after_click_away.datagrid_state.editing_cell == nil
       assert after_click_away.inline_input_ref == nil
 
@@ -567,7 +631,10 @@ defmodule Strata.UI.AppTest do
       footer_actions = Strata.UI.Components.Footer.clickable_actions(editing_again, layout.footer)
       null_btn = Enum.find(footer_actions, &(&1.key == :"ctrl+n"))
       refute is_nil(null_btn)
-      after_null_click = App.handle_mouse(editing_again, {:click, null_btn.area.x, null_btn.area.y})
+
+      after_null_click =
+        App.handle_mouse(editing_again, {:click, null_btn.area.x, null_btn.area.y})
+
       assert after_null_click.datagrid_state.editing_cell == nil
       assert after_null_click.datagrid_state.pending_edits[{0, 1}] == %{orig: "Alpha", new: nil}
     end
@@ -595,7 +662,9 @@ defmodule Strata.UI.AppTest do
       # 2. Bracketed Event.Paste into ConnectionModal
       conn_app =
         App.new()
-        |> App.push_modal(Strata.UI.Components.ConnectionModal.new(host: "", focused_field: :host))
+        |> App.push_modal(
+          Strata.UI.Components.ConnectionModal.new(host: "", focused_field: :host)
+        )
 
       {:noreply, pasted_conn_app} =
         App.handle_event(%ExRatatui.Event.Paste{content: "db.internal.local\n"}, conn_app)
@@ -613,12 +682,19 @@ defmodule Strata.UI.AppTest do
       {:noreply, pasted_inline_app} =
         App.handle_event(%ExRatatui.Event.Key{code: "v", modifiers: ["ctrl"]}, inline_app)
 
-      assert ExRatatui.text_input_get_value(pasted_inline_app.inline_input_ref) == "AliceClipboardVal"
+      assert ExRatatui.text_input_get_value(pasted_inline_app.inline_input_ref) ==
+               "AliceClipboardVal"
 
       # Ctrl+V on selected cell without inline editor open stages clipboard directly
       selecting_app = App.new(focus: :datagrid, active_view: :query_view, datagrid_state: grid)
-      {:noreply, pasted_cell_app} = App.handle_event(%ExRatatui.Event.Key{code: "v", modifiers: ["ctrl"]}, selecting_app)
-      assert pasted_cell_app.datagrid_state.pending_edits[{0, 1}] == %{orig: "Alice", new: "ClipboardVal"}
+
+      {:noreply, pasted_cell_app} =
+        App.handle_event(%ExRatatui.Event.Key{code: "v", modifiers: ["ctrl"]}, selecting_app)
+
+      assert pasted_cell_app.datagrid_state.pending_edits[{0, 1}] == %{
+               orig: "Alice",
+               new: "ClipboardVal"
+             }
 
       # 4. Applying filter stores active_filter and re-opening Filter modal restores it
       applied_app = App.handle_key(pasted_filter_app, :enter)
@@ -668,7 +744,14 @@ defmodule Strata.UI.AppTest do
 
       applied_bar = App.handle_key(pasted_bar, :enter)
       assert applied_bar.filter_bar_focused == false
-      assert applied_bar.active_filter == %{mode: :builder, column: "* All", op: :contains, value: "Alice", summary: "* All contains Alice"}
+
+      assert applied_bar.active_filter == %{
+               mode: :builder,
+               column: "* All",
+               op: :contains,
+               value: "Alice",
+               summary: "* All contains Alice"
+             }
 
       # Ctrl+L clears active filter and closes bar
       cleared_bar = App.handle_key(applied_bar, {:ctrl, "l"})
@@ -707,14 +790,24 @@ defmodule Strata.UI.AppTest do
       layout = Strata.UI.Renderer.layout({120, 40}, :table_view)
       areas = Strata.UI.Renderer.datagrid_areas(layout.datagrid, col_open)
       rects = Strata.UI.Renderer.filter_bar_rects(areas.filter_area, col_open)
-      closed_no_reload = App.handle_mouse(col_open, {:click, rects.clear_rect.x, rects.clear_rect.y})
+
+      closed_no_reload =
+        App.handle_mouse(col_open, {:click, rects.clear_rect.x, rects.clear_rect.y})
+
       assert closed_no_reload.filter_bar_open == false
       assert closed_no_reload.datagrid_state.loading_more == false
       assert closed_no_reload.status_message == "Filter bar closed"
 
       # Shift+F ('F') in Select mode applies immediate 1-click filter by active cell value
       one_click = App.handle_key(app, "F")
-      assert one_click.active_filter == %{mode: :builder, column: "name", op: :=, value: "Alice", summary: "name = Alice"}
+
+      assert one_click.active_filter == %{
+               mode: :builder,
+               column: "name",
+               op: :=,
+               value: "Alice",
+               summary: "name = Alice"
+             }
 
       # Pressing Enter in Select Mode opens Right Inspector Drawer (and 'I' / Esc toggles it)
       inspected = App.handle_key(app, :enter)
@@ -742,7 +835,10 @@ defmodule Strata.UI.AppTest do
     test "splits Inspector into independently scrollable Data Field and Row Summary panes with JSON highlighting" do
       long_json =
         Jason.encode!(%{
-          "items" => Enum.map(1..20, fn i -> %{"id" => i, "name" => "Item #{i}", "active" => rem(i, 2) == 0} end)
+          "items" =>
+            Enum.map(1..20, fn i ->
+              %{"id" => i, "name" => "Item #{i}", "active" => rem(i, 2) == 0}
+            end)
         })
 
       cols = Enum.map(1..16, fn i -> "col_#{i}" end)
@@ -782,7 +878,9 @@ defmodule Strata.UI.AppTest do
       assert scrolled_val_key.inspector_value_scroll == 5
 
       # Scroll Row Summary pane independently via mouse wheel and keyboard
-      scrolled_sum = App.handle_mouse(scrolled_val_key, {:scroll, :down, s_area.x + 2, s_area.y + 2})
+      scrolled_sum =
+        App.handle_mouse(scrolled_val_key, {:scroll, :down, s_area.x + 2, s_area.y + 2})
+
       assert scrolled_sum.inspector_summary_scroll == 3
       assert scrolled_sum.inspector_value_scroll == 5
 
@@ -846,7 +944,13 @@ defmodule Strata.UI.AppTest do
               type: :schema,
               expanded?: true,
               children: [
-                %{id: "#{prof.id}_main_tbl_products", label: "products", type: :table, schema: "main", children: []}
+                %{
+                  id: "#{prof.id}_main_tbl_products",
+                  label: "products",
+                  type: :table,
+                  schema: "main",
+                  children: []
+                }
               ]
             }
           ]
@@ -876,14 +980,32 @@ defmodule Strata.UI.AppTest do
       # 1. Apply Shift+F filter on category='book', then sort by name header -> filter is preserved!
       filtered = App.handle_key(app, "F")
       assert_receive {:filter_query_finished, "category = book", "", {:ok, res1}}, 2_000
-      {:noreply, filtered_loaded} = App.handle_info({:filter_query_finished, "category = book", "", {:ok, res1}}, filtered)
+
+      {:noreply, filtered_loaded} =
+        App.handle_info({:filter_query_finished, "category = book", "", {:ok, res1}}, filtered)
+
       assert length(filtered_loaded.datagrid_state.rows) == 2
 
       # Sort while selected on column 2 preserves selected column, col_offset, and mode
-      filtered_on_col2 = %{filtered_loaded | datagrid_state: %{filtered_loaded.datagrid_state | selected_cell: {0, 2}, col_offset: 1, mode: :selecting}}
+      filtered_on_col2 = %{
+        filtered_loaded
+        | datagrid_state: %{
+            filtered_loaded.datagrid_state
+            | selected_cell: {0, 2},
+              col_offset: 1,
+              mode: :selecting
+          }
+      }
+
       sorted = App.sort_active_table_by_col(filtered_on_col2, 2)
       assert_receive {:table_sorted_loaded, s_req_id, "products", {"name", :asc}, s_res}, 2_000
-      {:noreply, sorted_loaded} = App.handle_info({:table_sorted_loaded, s_req_id, "products", {"name", :asc}, s_res}, sorted)
+
+      {:noreply, sorted_loaded} =
+        App.handle_info(
+          {:table_sorted_loaded, s_req_id, "products", {"name", :asc}, s_res},
+          sorted
+        )
+
       assert sorted_loaded.datagrid_state.sort_by == {"name", :asc}
       assert sorted_loaded.datagrid_state.selected_cell == {0, 2}
       assert sorted_loaded.datagrid_state.col_offset == 1
@@ -901,7 +1023,12 @@ defmodule Strata.UI.AppTest do
       # Mouse scroll while dropdown is open scrolls dropdown items and locks background grid scroll
       scrolled_dd =
         op_dd_app
-        |> Map.put(:datagrid_state, %{op_dd_app.datagrid_state | rows: Enum.map(1..50, &[&1, "book", "Item #{&1}"]), total_rows: 50, scroll_offset: 0})
+        |> Map.put(:datagrid_state, %{
+          op_dd_app.datagrid_state
+          | rows: Enum.map(1..50, &[&1, "book", "Item #{&1}"]),
+            total_rows: 50,
+            scroll_offset: 0
+        })
         |> App.handle_mouse({:scroll, :down, rects0.op_rect.x, rects0.op_rect.y + 4})
 
       assert scrolled_dd.filter_dropdown_idx == 1
@@ -940,14 +1067,25 @@ defmodule Strata.UI.AppTest do
       assert length(res_j.rows) == 1
       assert hd(res_j.rows) == [3, "music", "Jazz"]
 
-      clicked_clear = App.handle_mouse(clicked_run, {:click, rects.clear_rect.x, rects.clear_rect.y})
+      clicked_clear =
+        App.handle_mouse(clicked_run, {:click, rects.clear_rect.x, rects.clear_rect.y})
+
       assert clicked_clear.active_filter == nil
       assert clicked_clear.filter_bar_open == false
       assert_receive {:table_data_loaded, t_req_id, pid, schema, "products", t_res}, 2_000
-      {:noreply, reloaded_clear} = App.handle_info({:table_data_loaded, t_req_id, pid, schema, "products", t_res}, clicked_clear)
+
+      {:noreply, reloaded_clear} =
+        App.handle_info(
+          {:table_data_loaded, t_req_id, pid, schema, "products", t_res},
+          clicked_clear
+        )
 
       # 5. In Browsing mode, pressing 'o' opens Sort Column Picker (avoiding blind sorting)
-      browsing_app = %{reloaded_clear | datagrid_state: %{reloaded_clear.datagrid_state | mode: :browsing}}
+      browsing_app = %{
+        reloaded_clear
+        | datagrid_state: %{reloaded_clear.datagrid_state | mode: :browsing}
+      }
+
       sp_app = App.handle_key(browsing_app, "o")
       assert sp_app.sort_picker_open == true
       assert Strata.UI.KeyRegistry.determine_context(sp_app) == :sort_picker
@@ -998,8 +1136,20 @@ defmodule Strata.UI.AppTest do
                   type: :schema,
                   expanded?: true,
                   children: [
-                    %{id: "#{prof.id}_main_tbl_events", label: "events", type: :table, schema: "main", children: []},
-                    %{id: "#{prof.id}_main_tbl_users", label: "users", type: :table, schema: "main", children: []}
+                    %{
+                      id: "#{prof.id}_main_tbl_events",
+                      label: "events",
+                      type: :table,
+                      schema: "main",
+                      children: []
+                    },
+                    %{
+                      id: "#{prof.id}_main_tbl_users",
+                      label: "users",
+                      type: :table,
+                      schema: "main",
+                      children: []
+                    }
                   ]
                 }
               ]
@@ -1029,20 +1179,33 @@ defmodule Strata.UI.AppTest do
       assert Strata.ConfigStore.get_profile(prof.id) != nil
 
       # 3. Sidebar search '/' filters visible tree and loads matching table on Enter
-      {:noreply, filter_mode} = App.handle_event(%ExRatatui.Event.Key{code: "/", kind: "press"}, app)
+      {:noreply, filter_mode} =
+        App.handle_event(%ExRatatui.Event.Key{code: "/", kind: "press"}, app)
+
       assert filter_mode.sidebar_filter_active == true
-      {:noreply, typed_filter} = App.handle_event(%ExRatatui.Event.Key{code: "u", kind: "press"}, filter_mode)
-      {:noreply, typed_filter} = App.handle_event(%ExRatatui.Event.Key{code: "s", kind: "press"}, typed_filter)
+
+      {:noreply, typed_filter} =
+        App.handle_event(%ExRatatui.Event.Key{code: "u", kind: "press"}, filter_mode)
+
+      {:noreply, typed_filter} =
+        App.handle_event(%ExRatatui.Event.Key{code: "s", kind: "press"}, typed_filter)
+
       visible = Strata.UI.Components.Sidebar.visible_nodes(typed_filter)
       assert Enum.any?(visible, &(&1.label == "users"))
       refute Enum.any?(visible, &(&1.label == "events"))
 
       # 4. Renderer shows active connection & schema on SQL Editor block title
-      query_app = %{app | active_view: :query_view, selected_tree_node_id: "#{prof.id}_main_tbl_users"}
+      query_app = %{
+        app
+        | active_view: :query_view,
+          selected_tree_node_id: "#{prof.id}_main_tbl_users"
+      }
+
       widgets = Strata.UI.Renderer.render(query_app)
 
       assert Enum.any?(widgets, fn
-               {%ExRatatui.Widgets.Paragraph{block: %ExRatatui.Widgets.Block{title: title}}, _rect} ->
+               {%ExRatatui.Widgets.Paragraph{block: %ExRatatui.Widgets.Block{title: title}},
+                _rect} ->
                  String.contains?(title, "SQL EDITOR [Analytics Renamed · main]")
 
                _ ->
@@ -1057,26 +1220,64 @@ defmodule Strata.UI.AppTest do
 
     test "scroll handle_event skips redraw (render?: false) on boundary no-op and scroll-lock-damped events" do
       cols = ["id", "c1", "c2", "c3", "c4", "c5", "c6"]
-      rows = for i <- 1..60, do: [i, "val_#{i}_a", "val_#{i}_b", "val_#{i}_c", "val_#{i}_d", "val_#{i}_e", "val_#{i}_f"]
-      grid = Strata.UI.Components.DataGrid.new(cols, rows, mode: :browsing, scroll_offset: 0, col_offset: 0)
 
-      app = App.new(window_size: {80, 24}, active_view: :table_view, focus: :datagrid, datagrid_state: grid)
-      g_area = Strata.UI.Renderer.datagrid_areas(Strata.UI.Renderer.layout({80, 24}, :table_view).datagrid, app).grid_area
+      rows =
+        for i <- 1..60,
+            do: [
+              i,
+              "val_#{i}_a",
+              "val_#{i}_b",
+              "val_#{i}_c",
+              "val_#{i}_d",
+              "val_#{i}_e",
+              "val_#{i}_f"
+            ]
+
+      grid =
+        Strata.UI.Components.DataGrid.new(cols, rows,
+          mode: :browsing,
+          scroll_offset: 0,
+          col_offset: 0
+        )
+
+      app =
+        App.new(
+          window_size: {80, 24},
+          active_view: :table_view,
+          focus: :datagrid,
+          datagrid_state: grid
+        )
+
+      g_area =
+        Strata.UI.Renderer.datagrid_areas(
+          Strata.UI.Renderer.layout({80, 24}, :table_view).datagrid,
+          app
+        ).grid_area
+
       gx = g_area.x + 2
       gy = g_area.y + 3
 
       # Scrolling up at top boundary (scroll_offset == 0) is a visual no-op -> render?: false
-      {:noreply, top_noop, opts_top} = App.handle_event(%ExRatatui.Event.Mouse{kind: "scroll_up", x: gx, y: gy}, app)
+      {:noreply, top_noop, opts_top} =
+        App.handle_event(%ExRatatui.Event.Mouse{kind: "scroll_up", x: gx, y: gy}, app)
+
       assert top_noop.datagrid_state.scroll_offset == 0
       assert Keyword.get(opts_top, :render?) == false
 
       # Scrolling down moves scroll_offset -> render?: true
-      {:noreply, scrolled_down, opts_down} = App.handle_event(%ExRatatui.Event.Mouse{kind: "scroll_down", x: gx, y: gy}, top_noop)
+      {:noreply, scrolled_down, opts_down} =
+        App.handle_event(%ExRatatui.Event.Mouse{kind: "scroll_down", x: gx, y: gy}, top_noop)
+
       assert scrolled_down.datagrid_state.scroll_offset > 0
       assert Keyword.get(opts_down, :render?) == true
 
       # Horizontal scroll immediately after vertical burst is blocked by vertical scroll_lock -> render?: false
-      {:noreply, damped_h, opts_h} = App.handle_event(%ExRatatui.Event.Mouse{kind: "scroll_right", x: gx, y: gy}, scrolled_down)
+      {:noreply, damped_h, opts_h} =
+        App.handle_event(
+          %ExRatatui.Event.Mouse{kind: "scroll_right", x: gx, y: gy},
+          scrolled_down
+        )
+
       assert damped_h.datagrid_state.col_offset == 0
       assert Keyword.get(opts_h, :render?) == false
     end

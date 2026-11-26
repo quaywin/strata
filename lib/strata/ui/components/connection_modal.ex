@@ -99,9 +99,14 @@ defmodule Strata.UI.Components.ConnectionModal do
   def to_profile(%__MODULE__{} = modal) do
     name =
       cond do
-        modal.name && String.trim(modal.name) != "" -> String.trim(modal.name)
-        modal.database && String.trim(modal.database) != "" -> "#{String.upcase(to_string(modal.driver))} - #{modal.database}"
-        true -> "#{String.upcase(to_string(modal.driver))} (#{modal.host})"
+        modal.name && String.trim(modal.name) != "" ->
+          String.trim(modal.name)
+
+        modal.database && String.trim(modal.database) != "" ->
+          "#{String.upcase(to_string(modal.driver))} - #{modal.database}"
+
+        true ->
+          "#{String.upcase(to_string(modal.driver))} (#{modal.host})"
       end
 
     %ConnectionProfile{
@@ -121,7 +126,9 @@ defmodule Strata.UI.Components.ConnectionModal do
   @doc """
   Returns the visible ordered field keys for the given driver.
   """
-  def visible_fields(:sqlite), do: [:name, :driver, :database, :test_button, :save_button, :cancel_button]
+  def visible_fields(:sqlite),
+    do: [:name, :driver, :database, :test_button, :save_button, :cancel_button]
+
   def visible_fields(_driver), do: @fields
 
   @doc """
@@ -152,7 +159,10 @@ defmodule Strata.UI.Components.ConnectionModal do
           end
 
         query_map = if is_binary(uri.query), do: URI.decode_query(uri.query), else: %{}
-        ssl? = Map.get(query_map, "sslmode") in ["require", "verify-ca", "verify-full"] or Map.get(query_map, "ssl") == "true"
+
+        ssl? =
+          Map.get(query_map, "sslmode") in ["require", "verify-ca", "verify-full"] or
+            Map.get(query_map, "ssl") == "true"
 
         {:ok,
          %{
@@ -182,8 +192,19 @@ defmodule Strata.UI.Components.ConnectionModal do
     case parse_uri(input) do
       {:ok, attrs} ->
         updated = struct(modal, attrs)
-        name = if String.trim(updated.name || "") == "", do: Path.basename(updated.database || "") |> then(&if(&1 == "", do: "New Connection", else: &1)), else: updated.name
-        %{updated | name: name, status_message: "⚡ Parsed #{String.upcase(to_string(updated.driver))} URI"}
+
+        name =
+          if String.trim(updated.name || "") == "",
+            do:
+              Path.basename(updated.database || "")
+              |> then(&if(&1 == "", do: "New Connection", else: &1)),
+            else: updated.name
+
+        %{
+          updated
+          | name: name,
+            status_message: "⚡ Parsed #{String.upcase(to_string(updated.driver))} URI"
+        }
 
       :error ->
         modal
@@ -212,7 +233,8 @@ defmodule Strata.UI.Components.ConnectionModal do
   end
 
   # Driver cycling with smart defaults
-  def handle_key(%__MODULE__{focused_field: :driver} = modal, key) when key in [:right, :space, :enter] do
+  def handle_key(%__MODULE__{focused_field: :driver} = modal, key)
+      when key in [:right, :space, :enter] do
     cycle_driver(modal, 1)
   end
 
@@ -221,7 +243,8 @@ defmodule Strata.UI.Components.ConnectionModal do
   end
 
   # SSL mode toggle
-  def handle_key(%__MODULE__{focused_field: :ssl} = modal, key) when key in [:space, :enter, :right, :left] do
+  def handle_key(%__MODULE__{focused_field: :ssl} = modal, key)
+      when key in [:space, :enter, :right, :left] do
     %{modal | ssl: not modal.ssl}
   end
 
@@ -253,15 +276,18 @@ defmodule Strata.UI.Components.ConnectionModal do
   end
 
   # Buttons handling
-  def handle_key(%__MODULE__{focused_field: :test_button} = modal, key) when key in [:enter, :space] do
+  def handle_key(%__MODULE__{focused_field: :test_button} = modal, key)
+      when key in [:enter, :space] do
     test_connection(modal)
   end
 
-  def handle_key(%__MODULE__{focused_field: :save_button} = modal, key) when key in [:enter, :space] do
+  def handle_key(%__MODULE__{focused_field: :save_button} = modal, key)
+      when key in [:enter, :space] do
     {:save, modal}
   end
 
-  def handle_key(%__MODULE__{focused_field: :cancel_button} = modal, key) when key in [:enter, :space] do
+  def handle_key(%__MODULE__{focused_field: :cancel_button} = modal, key)
+      when key in [:enter, :space] do
     {:cancel, modal}
   end
 
@@ -328,7 +354,13 @@ defmodule Strata.UI.Components.ConnectionModal do
         modal.username
       end
 
-    %{modal | driver: next_driver, port: default_port(next_driver), database: new_db, username: new_user}
+    %{
+      modal
+      | driver: next_driver,
+        port: default_port(next_driver),
+        database: new_db,
+        username: new_user
+    }
   end
 
   @doc """
@@ -358,8 +390,12 @@ defmodule Strata.UI.Components.ConnectionModal do
   def render(%__MODULE__{} = modal, area) do
     ssh_display =
       case modal.ssh_profile_id do
-        nil -> "(None — ←/→ to choose)"
-        "" -> "(None — ←/→ to choose)"
+        nil ->
+          "(None — ←/→ to choose)"
+
+        "" ->
+          "(None — ←/→ to choose)"
+
         ssh_id ->
           case Strata.SSHProfileStore.get_profile(ssh_id) do
             %{name: sname} when is_binary(sname) and sname != "" -> "#{sname} (#{ssh_id})"
@@ -368,7 +404,12 @@ defmodule Strata.UI.Components.ConnectionModal do
       end
 
     all_field_defs = %{
-      name: %{label: "Name", key: :name, value: if(modal.name == "", do: "(Type Name or Paste URI...)", else: modal.name), type: :text},
+      name: %{
+        label: "Name",
+        key: :name,
+        value: if(modal.name == "", do: "(Type Name or Paste URI...)", else: modal.name),
+        type: :text
+      },
       driver: %{
         label: "Driver",
         key: :driver,
@@ -385,9 +426,24 @@ defmodule Strata.UI.Components.ConnectionModal do
         type: :text
       },
       username: %{label: "Username", key: :username, value: modal.username, type: :text},
-      password: %{label: "Password", key: :password, value: String.duplicate("*", String.length(modal.password)), type: :password},
-      ssl: %{label: "SSL Mode", key: :ssl, value: if(modal.ssl, do: "Enabled", else: "Disabled"), type: :toggle},
-      ssh_profile_id: %{label: "SSH Profile", key: :ssh_profile_id, value: ssh_display, type: :select},
+      password: %{
+        label: "Password",
+        key: :password,
+        value: String.duplicate("*", String.length(modal.password)),
+        type: :password
+      },
+      ssl: %{
+        label: "SSL Mode",
+        key: :ssl,
+        value: if(modal.ssl, do: "Enabled", else: "Disabled"),
+        type: :toggle
+      },
+      ssh_profile_id: %{
+        label: "SSH Profile",
+        key: :ssh_profile_id,
+        value: ssh_display,
+        type: :select
+      },
       test_button: %{label: "[⚡ Test Connection]", key: :test_button, type: :button},
       save_button: %{label: "[ Save (Ctrl+S) ]", key: :save_button, type: :button},
       cancel_button: %{label: "[ Cancel (Esc) ]", key: :cancel_button, type: :button}

@@ -38,16 +38,17 @@ defmodule Strata.UI.Components.ConnectionModalTest do
     end
 
     test "to_profile converts modal state to ConnectionProfile" do
-      modal = ConnectionModal.new(
-        name: "Test Postgres",
-        driver: :postgres,
-        host: "10.0.0.1",
-        port: 5432,
-        database: "mydb",
-        username: "postgres",
-        password: "pass",
-        ssh_profile_id: "bastion"
-      )
+      modal =
+        ConnectionModal.new(
+          name: "Test Postgres",
+          driver: :postgres,
+          host: "10.0.0.1",
+          port: 5432,
+          database: "mydb",
+          username: "postgres",
+          password: "pass",
+          ssh_profile_id: "bastion"
+        )
 
       profile = ConnectionModal.to_profile(modal)
       assert profile.name == "Test Postgres"
@@ -180,7 +181,10 @@ defmodule Strata.UI.Components.ConnectionModalTest do
     end
 
     test "parse_uri & apply_uri populate Postgres/MySQL URIs and SQLite paths" do
-      uri_modal = ConnectionModal.new() |> ConnectionModal.apply_uri("postgres://admin:s3cret@db.host:5433/prod?sslmode=require")
+      uri_modal =
+        ConnectionModal.new()
+        |> ConnectionModal.apply_uri("postgres://admin:s3cret@db.host:5433/prod?sslmode=require")
+
       assert uri_modal.driver == :postgres
       assert uri_modal.host == "db.host"
       assert uri_modal.port == 5433

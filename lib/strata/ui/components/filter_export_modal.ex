@@ -10,24 +10,22 @@ defmodule Strata.UI.Components.FilterExportModal do
   @filter_fields [:where, :order_by, :limit, :apply_button, :clear_button, :cancel_button]
   @export_fields [:format, :file_path, :scope, :export_button, :cancel_button]
 
-  defstruct [
-    mode: :filter,
-    # Filter mode fields
-    where_clause: "",
-    order_by_clause: "",
-    limit: nil,
-    columns: [],
-    selected_column: nil,
-    # Export mode fields
-    format: :csv,
-    file_path: "export.csv",
-    scope: :all,
-    # Focus, cursor, and status
-    focused_field: :where,
-    cursor_pos: 0,
-    status: :idle,
-    status_message: nil
-  ]
+  defstruct mode: :filter,
+            # Filter mode fields
+            where_clause: "",
+            order_by_clause: "",
+            limit: nil,
+            columns: [],
+            selected_column: nil,
+            # Export mode fields
+            format: :csv,
+            file_path: "export.csv",
+            scope: :all,
+            # Focus, cursor, and status
+            focused_field: :where,
+            cursor_pos: 0,
+            status: :idle,
+            status_message: nil
 
   @type t :: %__MODULE__{
           mode: :filter | :export,
@@ -142,7 +140,10 @@ defmodule Strata.UI.Components.FilterExportModal do
   def handle_key(%__MODULE__{mode: :export, focused_field: :format} = modal, key)
       when key in [:left] do
     idx = Enum.find_index(@export_formats, &(&1 == modal.format)) || 0
-    prev_fmt = Enum.at(@export_formats, rem(idx - 1 + length(@export_formats), length(@export_formats)))
+
+    prev_fmt =
+      Enum.at(@export_formats, rem(idx - 1 + length(@export_formats), length(@export_formats)))
+
     new_ext = Atom.to_string(prev_fmt)
 
     new_path =
@@ -225,7 +226,8 @@ defmodule Strata.UI.Components.FilterExportModal do
 
   # Clear active field (Ctrl+U / Ctrl+K)
   def handle_key(%__MODULE__{focused_field: field} = modal, key)
-      when key in [{:ctrl, "u"}, {:ctrl, "k"}] and field in [:where, :order_by, :limit, :file_path] do
+      when key in [{:ctrl, "u"}, {:ctrl, "k"}] and
+             field in [:where, :order_by, :limit, :file_path] do
     empty_val = if field == :limit, do: nil, else: ""
 
     modal
@@ -277,7 +279,8 @@ defmodule Strata.UI.Components.FilterExportModal do
   @doc """
   Constructs a full SQL SELECT statement from filter options.
   """
-  def build_filter_sql(%__MODULE__{mode: :filter} = modal, base_table) when is_binary(base_table) do
+  def build_filter_sql(%__MODULE__{mode: :filter} = modal, base_table)
+      when is_binary(base_table) do
     clauses = []
 
     clauses =
@@ -352,11 +355,26 @@ defmodule Strata.UI.Components.FilterExportModal do
   Renders structured map representation of the modal for TUI rendering.
   """
   def render(%__MODULE__{mode: :filter} = modal, area) do
-    where_display = display_with_cursor(modal.where_clause, modal.focused_field == :where, modal.cursor_pos, "e.g. status = 'active' AND id > 10")
-    order_display = display_with_cursor(modal.order_by_clause, modal.focused_field == :order_by, modal.cursor_pos, "e.g. created_at DESC")
+    where_display =
+      display_with_cursor(
+        modal.where_clause,
+        modal.focused_field == :where,
+        modal.cursor_pos,
+        "e.g. status = 'active' AND id > 10"
+      )
+
+    order_display =
+      display_with_cursor(
+        modal.order_by_clause,
+        modal.focused_field == :order_by,
+        modal.cursor_pos,
+        "e.g. created_at DESC"
+      )
 
     limit_raw = if modal.limit, do: Integer.to_string(modal.limit), else: ""
-    limit_display = display_with_cursor(limit_raw, modal.focused_field == :limit, modal.cursor_pos, "e.g. 100")
+
+    limit_display =
+      display_with_cursor(limit_raw, modal.focused_field == :limit, modal.cursor_pos, "e.g. 100")
 
     fields = [
       %{label: "WHERE Clause", key: :where, value: where_display, type: :text},
@@ -376,7 +394,9 @@ defmodule Strata.UI.Components.FilterExportModal do
         ""
       end
 
-    tips = cols_hint <> "Tips: Enter Apply · ←/→ Cursor · Ctrl+V Paste · Ctrl+U Clear line · Ctrl+L Reset"
+    tips =
+      cols_hint <>
+        "Tips: Enter Apply · ←/→ Cursor · Ctrl+V Paste · Ctrl+U Clear line · Ctrl+L Reset"
 
     %{
       title: "FILTER & SORT DATA",
@@ -390,7 +410,13 @@ defmodule Strata.UI.Components.FilterExportModal do
   end
 
   def render(%__MODULE__{mode: :export} = modal, area) do
-    path_display = display_with_cursor(modal.file_path, modal.focused_field == :file_path, modal.cursor_pos, "export.csv")
+    path_display =
+      display_with_cursor(
+        modal.file_path,
+        modal.focused_field == :file_path,
+        modal.cursor_pos,
+        "export.csv"
+      )
 
     fields = [
       %{
@@ -401,7 +427,13 @@ defmodule Strata.UI.Components.FilterExportModal do
         options: Enum.map(@export_formats, &Atom.to_string/1)
       },
       %{label: "File Path", key: :file_path, value: path_display, type: :text},
-      %{label: "Scope", key: :scope, value: Atom.to_string(modal.scope), type: :select, options: Enum.map(@export_scopes, &Atom.to_string/1)},
+      %{
+        label: "Scope",
+        key: :scope,
+        value: Atom.to_string(modal.scope),
+        type: :select,
+        options: Enum.map(@export_scopes, &Atom.to_string/1)
+      },
       %{label: "[ Export Data ]", key: :export_button, type: :button},
       %{label: "[ Cancel ]", key: :cancel_button, type: :button}
     ]
@@ -413,7 +445,8 @@ defmodule Strata.UI.Components.FilterExportModal do
       focused_field: modal.focused_field,
       fields: fields,
       status: modal.status,
-      status_message: modal.status_message || "Tips: ←/→ Format/Scope · Ctrl+V Paste path · Enter Export"
+      status_message:
+        modal.status_message || "Tips: ←/→ Format/Scope · Ctrl+V Paste path · Enter Export"
     }
   end
 

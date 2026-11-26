@@ -33,7 +33,8 @@ defmodule Strata.SchemaInspectorTest do
                """
              )
 
-    assert {:ok, schema_info} = SchemaInspector.fetch_table_schema(worker, "members", driver: :sqlite)
+    assert {:ok, schema_info} =
+             SchemaInspector.fetch_table_schema(worker, "members", driver: :sqlite)
 
     assert schema_info.columns == ["Column", "Type", "Nullable", "Default", "Key", "Extra"]
     assert schema_info.primary_keys == ["id"]
@@ -47,7 +48,9 @@ defmodule Strata.SchemaInspectorTest do
   end
 
   test "fetch_tree_nodes distinguishes tables and views cleanly on SQLite" do
-    db_path = Path.join(System.tmp_dir!(), "strata_tree_#{System.unique_integer([:positive])}.sqlite")
+    db_path =
+      Path.join(System.tmp_dir!(), "strata_tree_#{System.unique_integer([:positive])}.sqlite")
+
     on_exit(fn -> File.rm(db_path) end)
 
     profile = %ConnectionProfile{
@@ -57,8 +60,17 @@ defmodule Strata.SchemaInspectorTest do
       database: db_path
     }
 
-    assert {:ok, _} = ConnectionWorker.execute_query_for_profile(profile, "CREATE TABLE users (id INTEGER PRIMARY KEY)")
-    assert {:ok, _} = ConnectionWorker.execute_query_for_profile(profile, "CREATE VIEW active_users AS SELECT id FROM users")
+    assert {:ok, _} =
+             ConnectionWorker.execute_query_for_profile(
+               profile,
+               "CREATE TABLE users (id INTEGER PRIMARY KEY)"
+             )
+
+    assert {:ok, _} =
+             ConnectionWorker.execute_query_for_profile(
+               profile,
+               "CREATE VIEW active_users AS SELECT id FROM users"
+             )
 
     tree = SchemaInspector.fetch_tree_nodes(profile)
 
@@ -77,7 +89,12 @@ defmodule Strata.SchemaInspectorTest do
       ])
 
     assert [
-             %{label: "analytics", type: :schema, expanded?: false, children: [%{label: "events"}]},
+             %{
+               label: "analytics",
+               type: :schema,
+               expanded?: false,
+               children: [%{label: "events"}]
+             },
              %{label: "public", type: :schema, expanded?: true, children: [%{label: "users"}]}
            ] = multi
   end
@@ -96,10 +113,22 @@ defmodule Strata.SchemaInspectorTest do
     pg = %ConnectionProfile{id: "c1", name: "Prod", driver: :postgres, database: "ecommerce_prod"}
     assert SchemaInspector.connection_label(pg) == "Prod · ecommerce_prod (PG)"
 
-    same = %ConnectionProfile{id: "c2", name: "ecommerce_prod", driver: :postgres, database: "ecommerce_prod"}
+    same = %ConnectionProfile{
+      id: "c2",
+      name: "ecommerce_prod",
+      driver: :postgres,
+      database: "ecommerce_prod"
+    }
+
     assert SchemaInspector.connection_label(same) == "ecommerce_prod (PG)"
 
-    sq = %ConnectionProfile{id: "c3", name: "Local", driver: :sqlite, database: "/tmp/orders.sqlite"}
+    sq = %ConnectionProfile{
+      id: "c3",
+      name: "Local",
+      driver: :sqlite,
+      database: "/tmp/orders.sqlite"
+    }
+
     assert SchemaInspector.connection_label(sq) == "Local · orders.sqlite (SQLite)"
   end
 end

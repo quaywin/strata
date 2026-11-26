@@ -146,7 +146,8 @@ defmodule Strata.Clipboard do
   for exit status so clipboard utilities (`pbcopy`, `wl-copy`, `xclip`, `xsel`) never
   race with premature port termination.
   """
-  def pipe_to_command(cmd, args, input) when is_binary(cmd) and is_list(args) and is_binary(input) do
+  def pipe_to_command(cmd, args, input)
+      when is_binary(cmd) and is_list(args) and is_binary(input) do
     case System.find_executable(cmd) do
       nil ->
         {:error, {:not_found, cmd}}
@@ -181,7 +182,9 @@ defmodule Strata.Clipboard do
         else
           if sh && head do
             bytes = Integer.to_string(byte_size(input))
-            script = ~s(n="$1"; exe="$2"; shift 2; head -c "$n" 2>/dev/null | "$exe" "$@" >/dev/null 2>&1)
+
+            script =
+              ~s(n="$1"; exe="$2"; shift 2; head -c "$n" 2>/dev/null | "$exe" "$@" >/dev/null 2>&1)
 
             port =
               Port.open({:spawn_executable, sh}, [

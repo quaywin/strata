@@ -22,7 +22,14 @@ defmodule Strata.QueryBuilderTest do
       orig = [7, "Alice", "a@test.com"]
 
       assert {:ok, {update_sql, update_params}} =
-               QueryBuilder.build_update(:postgres, ~s["public"."users"], cols, orig, %{1 => "Alicia"}, ["id"])
+               QueryBuilder.build_update(
+                 :postgres,
+                 ~s["public"."users"],
+                 cols,
+                 orig,
+                 %{1 => "Alicia"},
+                 ["id"]
+               )
 
       assert update_sql == ~s[UPDATE "public"."users" SET "name" = $1 WHERE "id" = $2;]
       assert update_params == ["Alicia", 7]
@@ -41,7 +48,9 @@ defmodule Strata.QueryBuilderTest do
       assert {:ok, {sql, params}} =
                QueryBuilder.build_update(:sqlite, ~s["logs"], cols, orig, %{1 => "Bob"}, [])
 
-      assert sql == ~s[UPDATE "logs" SET "name" = ? WHERE "id" = ? AND "name" = ? AND "note" IS NULL;]
+      assert sql ==
+               ~s[UPDATE "logs" SET "name" = ? WHERE "id" = ? AND "name" = ? AND "note" IS NULL;]
+
       assert params == ["Bob", 1, "Alice"]
     end
   end

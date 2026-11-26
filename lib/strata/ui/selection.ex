@@ -99,12 +99,28 @@ defmodule Strata.UI.Selection do
         insp_areas = Renderer.inspector_areas(areas.inspector_area)
         filter_dd = Renderer.filter_dropdown_data(app, layout.datagrid)
         sort_dd = Renderer.sort_picker_data(app, layout.datagrid)
-        editor_comp = if layout.editor.height > 0, do: Renderer.editor_completion_rect(app, layout.editor), else: nil
+
+        editor_comp =
+          if layout.editor.height > 0,
+            do: Renderer.editor_completion_rect(app, layout.editor),
+            else: nil
 
         {editor_tabs, editor_body} =
           if layout.editor.height > 0 do
-            tabs = %{x: layout.editor.x, y: layout.editor.y, width: layout.editor.width, height: 1}
-            body = %{x: layout.editor.x, y: layout.editor.y + 1, width: layout.editor.width, height: max(1, layout.editor.height - 1)}
+            tabs = %{
+              x: layout.editor.x,
+              y: layout.editor.y,
+              width: layout.editor.width,
+              height: 1
+            }
+
+            body = %{
+              x: layout.editor.x,
+              y: layout.editor.y + 1,
+              width: layout.editor.width,
+              height: max(1, layout.editor.height - 1)
+            }
+
             {tabs, body}
           else
             {nil, nil}
@@ -132,6 +148,7 @@ defmodule Strata.UI.Selection do
 
           rect ->
             b = inner_rect_bounds(rect)
+
             # In SQL Editor body, if drag starts in code region (past line-number gutter), keep selection inside code
             if rect == editor_body do
               code_min_x = editor_code_min_x(app, editor_body)
@@ -182,7 +199,10 @@ defmodule Strata.UI.Selection do
     selection_spans(anchor, current, bounds)
     |> Enum.map(fn {y, x_from, x_to} ->
       row_map = Map.get(rows, y, %{})
-      {_adj_from, _adj_to, text} = read_span_text(row_map, x_from, x_to, bounds.min_x, bounds.max_x, overlay?: false)
+
+      {_adj_from, _adj_to, text} =
+        read_span_text(row_map, x_from, x_to, bounds.min_x, bounds.max_x, overlay?: false)
+
       String.trim_trailing(text)
     end)
     |> trim_empty_edge_lines()
@@ -192,14 +212,19 @@ defmodule Strata.UI.Selection do
   @doc """
   Builds highlighted overlay Paragraph widgets showing the currently selected text range.
   """
-  @spec render_overlays(map(), point(), point(), bounds()) :: [{Paragraph.t(), ExRatatui.Layout.Rect.t()}]
+  @spec render_overlays(map(), point(), point(), bounds()) :: [
+          {Paragraph.t(), ExRatatui.Layout.Rect.t()}
+        ]
   def render_overlays(%{rows: rows} = _screen, anchor, current, bounds) do
     hl_style = %Style{fg: :black, bg: :cyan, modifiers: [:bold]}
 
     selection_spans(anchor, current, bounds)
     |> Enum.map(fn {y, x_from, x_to} ->
       row_map = Map.get(rows, y, %{})
-      {adj_from, adj_to, text} = read_span_text(row_map, x_from, x_to, bounds.min_x, bounds.max_x, overlay?: true)
+
+      {adj_from, adj_to, text} =
+        read_span_text(row_map, x_from, x_to, bounds.min_x, bounds.max_x, overlay?: true)
+
       w = max(1, adj_to - adj_from + 1)
 
       widget = %Paragraph{
@@ -271,7 +296,12 @@ defmodule Strata.UI.Selection do
 
     try do
       lines = Enum.map(chunk, fn sym -> Line.new([Span.new(sym <> "X")]) end)
-      :ok = ExRatatui.CellSession.draw(session, [{%Paragraph{text: lines}, %Rect{x: 0, y: 0, width: 8, height: row_count}}])
+
+      :ok =
+        ExRatatui.CellSession.draw(session, [
+          {%Paragraph{text: lines}, %Rect{x: 0, y: 0, width: 8, height: row_count}}
+        ])
+
       snap = ExRatatui.CellSession.take_cells(session)
       by_row = Enum.group_by(snap.cells, & &1.row)
 

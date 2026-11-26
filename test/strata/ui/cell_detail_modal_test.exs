@@ -42,7 +42,9 @@ defmodule Strata.UI.Components.CellDetailModalTest do
 
     test "preserves 16-byte printable strings as text while decoding 16-byte binary UUIDs" do
       assert Strata.Formatter.sanitize_cell("admin@sample.com") == "admin@sample.com"
-      assert Strata.Formatter.sanitize_cell(<<1234::32, 0::96>>) == "000004d2-0000-0000-0000-000000000000"
+
+      assert Strata.Formatter.sanitize_cell(<<1234::32, 0::96>>) ==
+               "000004d2-0000-0000-0000-000000000000"
 
       printable_modal = CellDetailModal.new("admin@sample.com")
       assert printable_modal.detected_type == :text

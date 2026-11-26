@@ -21,10 +21,16 @@ defmodule Strata.SSHTunnel do
   Helper to establish a tunnel and return `{:ok, local_port, tunnel_pid}` or `{:error, reason}`.
   """
   def connect(%SSHProfile{} = profile, target_host, target_port) do
-    case GenServer.start(__MODULE__, ssh_profile: profile, target_host: target_host, target_port: target_port) do
+    case GenServer.start(__MODULE__,
+           ssh_profile: profile,
+           target_host: target_host,
+           target_port: target_port
+         ) do
       {:ok, pid} ->
         case get_port(pid) do
-          {:ok, port} -> {:ok, port, pid}
+          {:ok, port} ->
+            {:ok, port, pid}
+
           {:error, reason} ->
             GenServer.stop(pid)
             {:error, reason}
@@ -62,9 +68,21 @@ defmodule Strata.SSHTunnel do
       {:ok, conn_ref} ->
         target_host_charlist = String.to_charlist(target_host)
 
-        case :ssh.tcpip_tunnel_to_server(conn_ref, {127, 0, 0, 1}, 0, target_host_charlist, target_port) do
+        case :ssh.tcpip_tunnel_to_server(
+               conn_ref,
+               {127, 0, 0, 1},
+               0,
+               target_host_charlist,
+               target_port
+             ) do
           {:ok, local_port} ->
-            {:ok, %{conn_ref: conn_ref, local_port: local_port, target_host: target_host, target_port: target_port}}
+            {:ok,
+             %{
+               conn_ref: conn_ref,
+               local_port: local_port,
+               target_host: target_host,
+               target_port: target_port
+             }}
 
           {:error, reason} ->
             :ssh.close(conn_ref)
@@ -112,7 +130,8 @@ defmodule Strata.SSHTunnel do
       end
 
     opts =
-      if profile.identity_file && profile.identity_file != "" && File.exists?(profile.identity_file) do
+      if profile.identity_file && profile.identity_file != "" &&
+           File.exists?(profile.identity_file) do
         dir = Path.dirname(profile.identity_file)
         [{:user_dir, String.to_charlist(dir)} | opts]
       else

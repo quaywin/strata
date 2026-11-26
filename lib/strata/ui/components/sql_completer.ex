@@ -22,7 +22,8 @@ defmodule Strata.UI.Components.SQLCompleter do
   Extracts current prefix word immediately preceding cursor `{row, col}`.
   Returns `{prefix_word, start_col}`.
   """
-  @spec extract_prefix(String.t(), {non_neg_integer(), non_neg_integer()}) :: {String.t(), non_neg_integer()}
+  @spec extract_prefix(String.t(), {non_neg_integer(), non_neg_integer()}) ::
+          {String.t(), non_neg_integer()}
   def extract_prefix(content, {row, col}) when is_binary(content) do
     lines = String.split(content, "\n")
     line = Enum.at(lines, max(0, min(length(lines) - 1, row)), "")
@@ -107,7 +108,12 @@ defmodule Strata.UI.Components.SQLCompleter do
   Replaces `prefix` before `{row, col}` cursor with `suggestion.insert_text`.
   Returns `{updated_content, new_cursor}`.
   """
-  @spec apply_completion(String.t(), {non_neg_integer(), non_neg_integer()}, suggestion(), String.t()) ::
+  @spec apply_completion(
+          String.t(),
+          {non_neg_integer(), non_neg_integer()},
+          suggestion(),
+          String.t()
+        ) ::
           {String.t(), {non_neg_integer(), non_neg_integer()}}
   def apply_completion(content, {row, col}, suggestion, prefix) do
     lines = String.split(content, "\n")

@@ -237,10 +237,10 @@ defmodule Strata.MixProject do
 
     cond do
       env_version && String.trim(env_version) != "" ->
-        env_version |> String.trim() |> String.trim_leading("v")
+        normalize_semver(env_version)
 
       github_ref && String.starts_with?(github_ref, "v") ->
-        github_ref |> String.trim() |> String.trim_leading("v")
+        normalize_semver(github_ref)
 
       true ->
         nil
@@ -260,12 +260,12 @@ defmodule Strata.MixProject do
           |> Enum.reverse()
           |> case do
             [_git_hash, "0" | rest] ->
-              rest |> Enum.reverse() |> Enum.join("-") |> String.trim_leading("v")
+              rest |> Enum.reverse() |> Enum.join("-") |> normalize_semver()
 
             [git_hash, count | rest] ->
-              tag = rest |> Enum.reverse() |> Enum.join("-") |> String.trim_leading("v")
+              tag = rest |> Enum.reverse() |> Enum.join("-")
               hash = String.trim_leading(git_hash, "g")
-              "#{tag}+dev.#{count}.#{hash}"
+              normalize_semver("#{tag}+dev.#{count}.#{hash}")
 
             _ ->
               nil
@@ -274,6 +274,35 @@ defmodule Strata.MixProject do
         _ ->
           nil
       end
+    end
+  end
+
+  defp normalize_semver(raw) when is_binary(raw) do
+    vsn = raw |> String.trim() |> String.trim_leading("v")
+
+    case Version.parse(vsn) do
+      {:ok, _} ->
+        vsn
+
+      :error ->
+        {core, suffix} =
+          case String.split(vsn, ~r/(?=[+-])/, parts: 2) do
+            [c, s] -> {c, s}
+            [c] -> {c, ""}
+          end
+
+        clean_core =
+          core
+          |> String.split(".")
+          |> Enum.map(&Regex.replace(~r/^0+(\d)/, &1, "\\1"))
+          |> Enum.join(".")
+
+        candidate = clean_core <> suffix
+
+        case Version.parse(candidate) do
+          {:ok, _} -> candidate
+          :error -> nil
+        end
     end
   end
 

@@ -40,7 +40,8 @@ defmodule Strata.DataStore do
   Returns `{columns, sliced_rows, loaded_rows_count, total_rows}`.
   Page is 1-indexed.
   """
-  @spec get_page(String.t(), integer(), integer()) :: {[String.t()], [list()], integer(), integer()}
+  @spec get_page(String.t(), integer(), integer()) ::
+          {[String.t()], [list()], integer(), integer()}
   def get_page(tab_id, page, page_size) when is_binary(tab_id) and page >= 1 and page_size >= 1 do
     case :ets.lookup(@table_name, tab_id) do
       [{^tab_id, columns, rows, loaded_count, total_rows}] ->
@@ -79,7 +80,14 @@ defmodule Strata.DataStore do
   @doc """
   Caches table rows in ETS scoped by `{conn_id, schema, table_name}`.
   """
-  @spec put_table_cache(String.t(), String.t() | nil, String.t(), [String.t()], [list()], boolean()) :: :ok
+  @spec put_table_cache(
+          String.t(),
+          String.t() | nil,
+          String.t(),
+          [String.t()],
+          [list()],
+          boolean()
+        ) :: :ok
   def put_table_cache(conn_id, schema, table_name, columns, rows, has_more \\ false)
       when is_binary(conn_id) and is_binary(table_name) do
     if :ets.info(@table_name) != :undefined do

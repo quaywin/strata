@@ -33,14 +33,15 @@ defmodule Strata.UI.Components.SSHModalTest do
     end
 
     test "to_profile converts modal state to SSHProfile" do
-      modal = SSHModal.new(
-        name: "AWS Bastion",
-        host: "1.2.3.4",
-        port: 22,
-        username: "ubuntu",
-        auth_type: :private_key,
-        identity_file: "/home/ubuntu/.ssh/id_rsa"
-      )
+      modal =
+        SSHModal.new(
+          name: "AWS Bastion",
+          host: "1.2.3.4",
+          port: 22,
+          username: "ubuntu",
+          auth_type: :private_key,
+          identity_file: "/home/ubuntu/.ssh/id_rsa"
+        )
 
       profile = SSHModal.to_profile(modal)
       assert profile.name == "AWS Bastion"
@@ -131,7 +132,14 @@ defmodule Strata.UI.Components.SSHModalTest do
     end
 
     test "exposes delete button and saved profile selector when editing existing SSH profile" do
-      prof = %SSHProfile{id: "ssh_1", name: "Bastion", host: "10.0.0.1", port: 22, username: "ubuntu"}
+      prof = %SSHProfile{
+        id: "ssh_1",
+        name: "Bastion",
+        host: "10.0.0.1",
+        port: 22,
+        username: "ubuntu"
+      }
+
       modal = SSHModal.new(profile: prof, focused_field: :delete_button)
       assert :delete_button in SSHModal.visible_fields(modal)
       assert {:delete, ^modal} = SSHModal.handle_key(modal, :enter)

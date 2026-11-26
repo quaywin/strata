@@ -112,7 +112,9 @@ defmodule Strata.SchemaInspector do
 
   defp build_table_nodes(profile_id, schema_name, objects) do
     objects
-    |> Enum.sort_by(fn {tbl, obj_type} -> {if(obj_type == :view, do: 1, else: 0), String.downcase(tbl)} end)
+    |> Enum.sort_by(fn {tbl, obj_type} ->
+      {if(obj_type == :view, do: 1, else: 0), String.downcase(tbl)}
+    end)
     |> Enum.map(fn {tbl, obj_type} ->
       %{
         id: "#{profile_id}_#{schema_name}_tbl_#{tbl}",
@@ -180,7 +182,10 @@ defmodule Strata.SchemaInspector do
 
       _ ->
         schemas = list_postgres_schemas(worker)
-        Enum.map(schemas, fn s -> {s, Enum.map(list_tables_in_schema(worker, :postgres, s), &{&1, :table})} end)
+
+        Enum.map(schemas, fn s ->
+          {s, Enum.map(list_tables_in_schema(worker, :postgres, s), &{&1, :table})}
+        end)
     end
   end
 

@@ -107,9 +107,6 @@ jobs:
           - target: macos_aarch64
             os: macos-15
             rust_target: aarch64-apple-darwin
-            target_arch: aarch64
-            target_os: apple
-            target_abi: darwin
 
     steps:
       - name: Checkout code
@@ -215,10 +212,17 @@ jobs:
         env:
           MIX_ENV: prod
           BURRITO_TARGET: ${{ matrix.target }}
-          TARGET_ARCH: ${{ matrix.target_arch }}
-          TARGET_OS: ${{ matrix.target_os }}
-          TARGET_ABI: ${{ matrix.target_abi }}
-        run: mix release --overwrite
+        run: |
+          if [ -n "${{ matrix.target_arch }}" ]; then
+            export TARGET_ARCH="${{ matrix.target_arch }}"
+          fi
+          if [ -n "${{ matrix.target_os }}" ]; then
+            export TARGET_OS="${{ matrix.target_os }}"
+          fi
+          if [ -n "${{ matrix.target_abi }}" ]; then
+            export TARGET_ABI="${{ matrix.target_abi }}"
+          fi
+          mix release --overwrite
 
       - name: Verify release binary
         run: |

@@ -70,7 +70,9 @@ defmodule Strata.MixProject do
 
     all_targets =
       Enum.map(all_targets, fn {name, opts} ->
-        if name == host do
+        # On Linux, keep Burrito's precompiled musl ERTS so musl NIFs (ex_ratatui, exqlite)
+        # match beam.smp instead of mixing host glibc ERTS with musl NIFs.
+        if name == host and name != :linux_x86_64 do
           {name, Keyword.put(opts, :custom_erts, local_erts)}
         else
           {name, opts}
@@ -86,7 +88,10 @@ defmodule Strata.MixProject do
         exclude_apps: [:wx, :observer, :debugger, :et, :reltool, :megaco, :eunit, :sasl, :mnesia],
         steps: [:assemble, &verify_burrito_nifs/1, &Burrito.wrap/1],
         burrito: [
-          targets: targets
+          targets: targets,
+          extra_steps: [
+            patch: [post: [Strata.Release.SyncOTPNIFs]]
+          ]
         ]
       ]
     ]
@@ -123,6 +128,7 @@ defmodule Strata.MixProject do
 
     case target_os do
       :linux ->
+        Application.put_env(:burrito, :erts_resolver, Strata.Release.LinuxERTSResolver)
         verify_ex_ratatui_linux_nif(release)
         verify_exqlite_nif(release, :linux)
 
@@ -317,4 +323,74 @@ defmodule Strata.MixProject do
       {:burrito, "~> 1.5.0", runtime: false}
     ]
   end
+end
+
+defmodule Strata.Release.LinuxERTSResolver do
+  @moduledoc false
+
+  def do_resolve(%{erts_source: {:precompiled, version: version}} = target) do
+    normalized =
+      case String.split(version, ".") do
+        [major, minor | _rest] -> "#{major}.#{minor}"
+        _ -> version
+      end
+
+    try do
+      apply(Burrito.Util.DefaultERTSResolver, :do_resolve, [target])
+    rescue
+      _ ->
+        apply(Burrito.Util.DefaultERTSResolver, :do_resolve, [
+          %{target | erts_source: {:precompiled, version: normalized}}
+        ])
+    end
+  end
+
+  def do_resolve(target) do
+    apply(Burrito.Util.DefaultERTSResolver, :do_resolve, [target])
+  end
+end
+
+defmodule Strata.Release.SyncOTPNIFs do
+  @moduledoc false
+
+  def execute(%{work_dir: work_dir, target: %{os: :linux}} = context) do
+    lib_dir = Path.join(work_dir, "lib")
+    entries = File.ls!(lib_dir)
+
+    for dir <- entries do
+      full_dir = Path.join(lib_dir, dir)
+      ebin_dir = Path.join(full_dir, "ebin")
+
+      if File.dir?(full_dir) and not File.dir?(ebin_dir) do
+        app_prefix = dir |> String.split("-") |> List.first()
+
+        target_dir =
+          Enum.find(entries, fn candidate ->
+            candidate != dir and
+              String.starts_with?(candidate, app_prefix <> "-") and
+              File.dir?(Path.join([lib_dir, candidate, "ebin"]))
+          end)
+
+        if target_dir do
+          target_full = Path.join(lib_dir, target_dir)
+
+          full_dir
+          |> Path.join("**/*.so")
+          |> Path.wildcard()
+          |> Enum.each(fn src_so ->
+            rel = Path.relative_to(src_so, full_dir)
+            dest_so = Path.join(target_full, rel)
+            File.mkdir_p!(Path.dirname(dest_so))
+            File.cp!(src_so, dest_so)
+          end)
+
+          File.rm_rf!(full_dir)
+        end
+      end
+    end
+
+    context
+  end
+
+  def execute(context), do: context
 end

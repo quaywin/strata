@@ -1,7 +1,9 @@
 # strata 🗄️ — Modern Terminal Database Manager
 
+[![CI](https://github.com/quaywin/strata/actions/workflows/ci.yml/badge.svg)](https://github.com/quaywin/strata/actions/workflows/ci.yml)
+[![Build and Release](https://github.com/quaywin/strata/actions/workflows/release.yml/badge.svg)](https://github.com/quaywin/strata/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Elixir](https://img.shields.io/badge/Elixir-1.15%2B-purple.svg)](https://elixir-lang.org/)
+[![Elixir](https://img.shields.io/badge/Elixir-1.18%2B-purple.svg)](https://elixir-lang.org/)
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen.svg)]()
 
 `strata` is a standalone, high-performance **Database TUI Manager** (Terminal User Interface) built for modern terminal workflows.
@@ -52,7 +54,21 @@ graph TD
 
 ---
 
-## 🚀 Quick Start & Installation
+## 🚀 Installation & Quick Start
+
+### Quick Install (Recommended)
+
+Download and install the pre-compiled standalone binary (`macos_aarch64`, `linux_x86_64`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/quaywin/strata/main/install.sh | sh
+```
+
+Then launch Strata:
+
+```bash
+strata
+```
 
 ### Running from Source (Development Mode)
 
@@ -98,6 +114,18 @@ The compiled binary will be output to `burrito_out/`:
 - macOS (Apple Silicon): `burrito_out/strata_macos_aarch64`
 - macOS (Intel): `burrito_out/strata_macos_x86_64`
 - Linux (x86_64 musl): `burrito_out/strata_linux_x86_64`
+
+---
+
+## 🛠️ CLI Options
+
+```bash
+# Show help message
+strata --help        # or: strata -h
+
+# Show current version
+strata --version     # or: strata -v
+```
 
 ---
 

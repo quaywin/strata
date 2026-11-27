@@ -14,4 +14,11 @@ defmodule Strata.CLITest do
     assert is_binary(Strata.CLI.version())
     assert Strata.CLI.version() != ""
   end
+
+  test "tui_start_opts enables terminal and mouse capture" do
+    opts = Strata.CLI.tui_start_opts()
+    assert Keyword.get(opts, :name) == Strata.UI.App
+    assert Keyword.get(opts, :terminal) == true
+    assert Keyword.get(opts, :mouse_capture) == true
+  end
 end

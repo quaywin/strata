@@ -100,6 +100,14 @@ defmodule Strata.CLI do
     """)
   end
 
+  @doc """
+  Returns the default options passed to `Strata.UI.App.start_link/1` for TUI sessions.
+  """
+  @spec tui_start_opts() :: keyword()
+  def tui_start_opts do
+    [name: Strata.UI.App, terminal: true, mouse_capture: true]
+  end
+
   defp ensure_native_loaded! do
     if Code.ensure_loaded?(ExRatatui.Native) do
       :ok = ExRatatui.Native.ensure_loaded()
@@ -118,7 +126,7 @@ defmodule Strata.CLI do
       Process.sleep(50)
     end
 
-    case Strata.UI.App.start_link(name: Strata.UI.App, terminal: true, mouse_capture: true) do
+    case Strata.UI.App.start_link(tui_start_opts()) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
 

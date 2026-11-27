@@ -35,7 +35,7 @@ defmodule Strata.Application do
           id: Strata.BurritoTUI,
           start:
             {ExRatatui.Burrito, :start_link,
-             [Strata.UI.App, args, [name: "strata", version: Strata.CLI.version()]]},
+             [Strata.BurritoTUI, args, [name: "strata", version: Strata.CLI.version()]]},
           restart: :transient
         }
 

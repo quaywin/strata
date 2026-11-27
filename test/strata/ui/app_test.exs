@@ -75,11 +75,11 @@ defmodule Strata.UI.AppTest do
       app = App.new()
       assert app.modals == []
 
-      modal1 = %{type: :connection_modal, title: "New Connection"}
+      modal1 = Strata.UI.Components.ConnectionModal.new()
       app = App.push_modal(app, modal1)
       assert app.modals == [modal1]
 
-      modal2 = %{type: :ssh_modal, title: "SSH Profile"}
+      modal2 = Strata.UI.Components.SSHModal.new()
       app = App.push_modal(app, modal2)
       assert app.modals == [modal2, modal1]
 
@@ -117,9 +117,9 @@ defmodule Strata.UI.AppTest do
 
     test "handles ctrl+1..2 and 1..2 shortcuts for view mode switching" do
       app = App.new(active_view: :query_view, focus: :sidebar)
-
-      app = App.handle_key(app, "1")
+      app = App.load_table_async(app, "users")
       assert app.active_view == :table_view
+      assert Enum.any?(app.tabs, &(&1.kind == :table and &1.table_name == "users"))
 
       app = App.handle_key(app, "2")
       assert app.active_view == :query_view
@@ -129,6 +129,61 @@ defmodule Strata.UI.AppTest do
 
       app = App.handle_key(app, {:ctrl, "2"})
       assert app.active_view == :query_view
+    end
+
+    test "unified tabs isolate multiple tables, SQL queries + results, and tab bar clicks" do
+      grid_a = Strata.UI.Components.DataGrid.new(["id"], [[1]])
+      app = App.new(active_view: :table_view, selected_table: "users", datagrid_state: grid_a)
+      assert length(app.tabs) == 1
+      users_tab_id = app.active_tab_id
+
+      # Opening a second table creates a new tab; reopening 'users' focuses existing tab
+      app = App.load_table_async(app, "orders")
+      assert length(app.tabs) == 2
+      orders_tab_id = app.active_tab_id
+      assert orders_tab_id != users_tab_id
+      assert app.selected_table == "orders"
+
+      app = App.load_table_async(app, "users")
+      assert length(app.tabs) == 2
+      assert app.active_tab_id == users_tab_id
+      assert app.datagrid_state == grid_a
+
+      # Opening a SQL editor tab creates a :query tab; query results stay inside that tab
+      app = App.open_tab(app, name: "Query 1", content: "SELECT 42 AS answer;")
+      assert length(app.tabs) == 3
+      query_tab_id = app.active_tab_id
+      assert app.active_view == :query_view
+      assert app.datagrid_state == nil
+
+      {:noreply, app} =
+        App.handle_info(
+          {:sql_query_finished, query_tab_id, 5, nil, false,
+           {:ok, %{columns: ["answer"], rows: [[42]]}}},
+          app
+        )
+
+      assert app.datagrid_state.rows == [[42]]
+
+      # Switching back to 'users' preserves 'users' DataGrid, and switching back to Query 1 restores its results
+      app = App.switch_tab(app, users_tab_id)
+      assert app.datagrid_state == grid_a
+
+      app = App.switch_tab(app, query_tab_id)
+      assert app.datagrid_state.rows == [[42]]
+
+      # Clicking tab bar [+ SQL] opens another SQL tab and clicking [×] closes a tab
+      layout = Strata.UI.Renderer.layout(app.window_size, app.active_view)
+      tb = Strata.UI.Renderer.tab_bar_layout(app, layout.tabs)
+      app = App.handle_mouse(app, {:click, tb.new_sql_rect.x + 1, tb.new_sql_rect.y})
+      assert length(app.tabs) == 4
+      newest_id = app.active_tab_id
+
+      tb2 = Strata.UI.Renderer.tab_bar_layout(app, layout.tabs)
+      newest_item = Enum.find(tb2.tabs, &(&1.id == newest_id))
+      app = App.handle_mouse(app, {:click, newest_item.close_rect.x, newest_item.close_rect.y})
+      assert length(app.tabs) == 3
+      refute Enum.any?(app.tabs, &(&1.id == newest_id))
     end
 
     test "handles escape to pop modal if active" do
@@ -160,8 +215,9 @@ defmodule Strata.UI.AppTest do
 
       grid = Strata.UI.Components.DataGrid.new(cols, rows)
 
-      # Window size 120x40, table_view active (datagrid full height, x: 30, y: 0)
+      # Window size 120x40, table_view active (datagrid starts below tab bar at y: 1)
       app = App.new(active_view: :table_view, datagrid_state: grid, window_size: {120, 40})
+      dg = Strata.UI.Renderer.layout({120, 40}, :table_view).datagrid
 
       # Column widths:
       # Col 0 ("id"): 5  -> rel_x: 0..4 (x: 31..35)
@@ -170,24 +226,24 @@ defmodule Strata.UI.AppTest do
       # Col 3 ("status"): 11 -> rel_x: 28..38 (x: 59..69)
       # Col 4 ("email"): 20 -> rel_x: 40..59 (x: 71..90)
 
-      # Click Col 0 ("id"): x = 33, y = 2
-      a0 = App.handle_mouse(app, {:click, 33, 2})
+      # Click Col 0 ("id") row 0: x = 33, y = dg.y + 2
+      a0 = App.handle_mouse(app, {:click, 33, dg.y + 2})
       assert a0.datagrid_state.selected_cell == {0, 0}
 
-      # Click Col 1 ("name"): x = 38, y = 2
-      a1 = App.handle_mouse(app, {:click, 38, 2})
+      # Click Col 1 ("name") row 0: x = 38, y = dg.y + 2
+      a1 = App.handle_mouse(app, {:click, 38, dg.y + 2})
       assert a1.datagrid_state.selected_cell == {0, 1}
 
-      # Click Col 2 ("role"): x = 45, y = 2
-      a2 = App.handle_mouse(app, {:click, 45, 2})
+      # Click Col 2 ("role") row 0: x = 45, y = dg.y + 2
+      a2 = App.handle_mouse(app, {:click, 45, dg.y + 2})
       assert a2.datagrid_state.selected_cell == {0, 2}
 
-      # Click Col 3 ("status"): x = 55, y = 3
-      a3 = App.handle_mouse(app, {:click, 55, 3})
+      # Click Col 3 ("status") row 1: x = 55, y = dg.y + 3
+      a3 = App.handle_mouse(app, {:click, 55, dg.y + 3})
       assert a3.datagrid_state.selected_cell == {1, 3}
 
-      # Click Col 4 ("email"): x = 65, y = 3
-      a4 = App.handle_mouse(app, {:click, 65, 3})
+      # Click Col 4 ("email") row 1: x = 65, y = dg.y + 3
+      a4 = App.handle_mouse(app, {:click, 65, dg.y + 3})
       assert a4.datagrid_state.selected_cell == {1, 4}
     end
   end
@@ -220,10 +276,190 @@ defmodule Strata.UI.AppTest do
       assert app.status_message =~ "empty SQL query"
     end
 
-    test "Esc in editor focus mode unfocuses back to datagrid (navigation mode)" do
-      app = App.new(focus: :editor)
+    test "App.handle_key applies suggestion on Enter or Tab when popup is open, and cycles focus on Tab when closed" do
+      app =
+        App.new(focus: :editor)
+        |> App.handle_key("S")
+        |> App.handle_key("E")
+
+      active = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      assert active.completion.active? == true
+
+      # Enter applies first suggestion through full App.handle_key dispatch
+      entered = App.handle_key(app, :enter)
+      entered_tab = Enum.find(entered.tabs, &(&1.id == entered.active_tab_id))
+      assert entered_tab.content == "SELECT"
+      assert entered_tab.completion.active? == false
+      assert entered.focus == :editor
+
+      # Tab also applies selected suggestion when popup is open without leaving :editor
+      tabbed = app |> App.handle_key(:down) |> App.handle_key(:tab)
+      tabbed_tab = Enum.find(tabbed.tabs, &(&1.id == tabbed.active_tab_id))
+      assert tabbed_tab.content == "SET"
+      assert tabbed_tab.completion.active? == false
+      assert tabbed.focus == :editor
+
+      # Tab when completion popup is closed still cycles pane focus
+      cycled = App.handle_key(tabbed, :tab)
+      assert cycled.focus == :datagrid
+    end
+
+    test "columns_prefetched populates DataStore and Ctrl+Space suggests alias columns in App" do
+      pid = "prefetch_conn_#{System.unique_integer([:positive])}"
+      app = App.new(focus: :editor) |> put_in([Access.key(:tabs), Access.at(0), :profile_id], pid)
+
+      {:noreply, app, render?: false} =
+        App.handle_info(
+          {:columns_prefetched, pid, {:ok, [{"public", "users", ["id", "email"]}]}},
+          app
+        )
+
+      app =
+        app
+        |> put_in([Access.key(:tabs), Access.at(0), :content], "SELECT * FROM users u WHERE ")
+        |> put_in([Access.key(:tabs), Access.at(0), :cursor], {0, 28})
+        |> App.handle_key({:ctrl, "space"})
+
+      active = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      assert active.completion.active? == true
+      assert Enum.any?(active.completion.suggestions, &(&1.insert_text == "u.email"))
+    end
+
+    test "Esc in editor focus dismisses completion popup first, then moves focus to datagrid" do
+      app =
+        App.new(focus: :editor)
+        |> App.handle_key("S")
+        |> App.handle_key("E")
+
+      active = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      assert active.completion.active? == true
+
+      # First Esc closes completion popup while staying in editor focus
+      app = App.handle_key(app, :esc)
+      active_after = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      assert active_after.completion.active? == false
+      assert app.focus == :editor
+
+      # Second Esc moves focus out of editor to datagrid
       app = App.handle_key(app, :esc)
       assert app.focus == :datagrid
+    end
+
+    test "mouse wheel scrolls SQL editor independently and click inside scrolled editor maps accurately" do
+      long_sql = Enum.map_join(1..30, "\n", fn i -> "SELECT #{i} AS col_#{i};" end)
+
+      app =
+        App.new(window_size: {120, 30}, active_view: :query_view, focus: :editor)
+        |> put_in([Access.key(:tabs), Access.at(0), :content], long_sql)
+        |> put_in([Access.key(:tabs), Access.at(0), :cursor], {0, 0})
+
+      layout = Strata.UI.Renderer.layout(app.window_size, :query_view)
+      ed = layout.editor
+
+      # Scroll down over SQL editor
+      app = App.handle_mouse(app, {:scroll, :scroll_down, ed.x + 2, ed.y + 2})
+      active = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      assert active.scroll_offset == 3
+      assert active.cursor == {0, 0}
+
+      # Clicking first visible code line lands at logical row 3 (scrolled offset + 0)
+      app = App.handle_mouse(app, {:click, ed.x + 10, ed.y + 1})
+      active_clicked = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      assert elem(active_clicked.cursor, 0) == 3
+
+      # Scroll back up
+      app = %{app | scroll_lock: nil}
+      app = App.handle_mouse(app, {:scroll, :scroll_up, ed.x + 2, ed.y + 2})
+      active_up = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      assert active_up.scroll_offset == 0
+    end
+
+    test "clicking any cell in tab close_rect [×] closes even :table tabs" do
+      table_tab = %{
+        id: "tab_tbl",
+        kind: :table,
+        name: "users",
+        table_name: "users",
+        datagrid_state: nil
+      }
+
+      query_tab = %{
+        id: "tab_q",
+        kind: :query,
+        name: "Query 1",
+        content: "",
+        cursor: {0, 0},
+        datagrid_state: nil
+      }
+
+      app =
+        App.new(
+          window_size: {120, 30},
+          tabs: [table_tab, query_tab],
+          active_tab_id: "tab_tbl",
+          active_view: :table_view
+        )
+
+      layout = Strata.UI.Renderer.layout(app.window_size, app.active_view)
+      tb = Strata.UI.Renderer.tab_bar_layout(app, layout.tabs)
+      tbl_item = Enum.find(tb.tabs, &(&1.id == "tab_tbl"))
+      assert tbl_item.close_rect.width == 3
+
+      # Clicking middle ('×') and right edge (']') of [×] both close the table tab
+      app_mid =
+        App.handle_mouse(app, {:click, tbl_item.close_rect.x + 1, tbl_item.close_rect.y})
+
+      assert Enum.map(app_mid.tabs, & &1.id) == ["tab_q"]
+
+      app_right =
+        App.handle_mouse(app, {:click, tbl_item.close_rect.x + 2, tbl_item.close_rect.y})
+
+      assert Enum.map(app_right.tabs, & &1.id) == ["tab_q"]
+    end
+
+    test "query result pagination loads next chunk on scroll near bottom and handles query_chunk_loaded" do
+      prof = %Strata.ConnectionProfile{
+        id: "q_page_conn_#{System.unique_integer([:positive])}",
+        name: "Query Page SQLite",
+        driver: :sqlite,
+        database: ":memory:"
+      }
+
+      :ok = Strata.ConfigStore.put_profile(prof)
+      on_exit(fn -> Strata.ConfigStore.delete_profile(prof.id) end)
+
+      rows_100 = Enum.map(1..100, fn i -> [i, "Row #{i}"] end)
+
+      grid =
+        Strata.UI.Components.DataGrid.new(["id", "name"], rows_100,
+          has_more: true,
+          loading_more: false,
+          batch_size: 100
+        )
+
+      app =
+        App.new(active_view: :query_view, focus: :datagrid)
+        |> put_in([Access.key(:tabs), Access.at(0), :profile_id], prof.id)
+        |> put_in([Access.key(:tabs), Access.at(0), :executed_sql], "SELECT * FROM items")
+        |> put_in([Access.key(:tabs), Access.at(0), :query_request_id], 77)
+        |> Map.put(:datagrid_state, grid)
+
+      # Jump to bottom in datagrid -> triggers load_more_query_data
+      app = App.handle_key(app, :end)
+      assert app.datagrid_state.loading_more == true
+      assert app.status_message == "Loading more query rows..."
+
+      # Receive second batch -> appends rows and updates has_more
+      {:noreply, app} =
+        App.handle_info(
+          {:query_chunk_loaded, app.active_tab_id, 77, 100,
+           {:ok, %{rows: [[101, "Row 101"]], has_more: false}}},
+          app
+        )
+
+      assert length(app.datagrid_state.rows) == 101
+      assert app.datagrid_state.has_more == false
+      assert app.datagrid_state.loading_more == false
     end
   end
 
@@ -265,7 +501,10 @@ defmodule Strata.UI.AppTest do
       fake_result = {:ok, ["id", "name"], [[2, "User 2"]]}
 
       {:noreply, final_state} =
-        App.handle_info({:table_chunk_loaded, "users", 1, fake_result}, updated)
+        App.handle_info(
+          {:table_chunk_loaded, updated.active_tab_id, "users", 1, fake_result},
+          updated
+        )
 
       assert final_state.datagrid_state.loading_more == false
       assert length(final_state.datagrid_state.rows) == 2
@@ -300,7 +539,7 @@ defmodule Strata.UI.AppTest do
 
       app =
         App.new(active_view: :table_view, datagrid_state: grid, window_size: {120, 40})
-        |> App.push_modal(Strata.UI.Components.FilterExportModal.new(:filter))
+        |> App.push_modal(Strata.UI.Components.ExportModal.new())
 
       # Scroll inside datagrid area should be ignored while modal is open
       after_scroll = App.handle_mouse(app, {:scroll, :down, 50, 10})
@@ -316,7 +555,9 @@ defmodule Strata.UI.AppTest do
       app = App.new(focus: :editor)
       result = {:ok, %{columns: ["id", "meta", "empty"], rows: [[1, %{"ok" => true}, nil]]}}
 
-      {:noreply, updated} = App.handle_info({:sql_query_finished, 5, result}, app)
+      {:noreply, updated} =
+        App.handle_info({:sql_query_finished, app.active_tab_id, 5, nil, false, result}, app)
+
       assert updated.active_view == :query_view
       assert updated.datagrid_state.rows == [[1, %{"ok" => true}, nil]]
       assert updated.status_message =~ "1 rows in 5ms"
@@ -402,8 +643,14 @@ defmodule Strata.UI.AppTest do
       assert loaded_app.datagrid_state.rows == [[1], [2]]
       assert loaded_app.status_message =~ "[DB]"
 
-      # Second load serves instantly from DataStore cache
-      cached_app = App.load_table_async(loaded_app, "accounts")
+      # Re-opening already open table focuses existing tab
+      focused_app = App.load_table_async(loaded_app, "accounts")
+      assert focused_app.status_message =~ "Switched to tab 'accounts'"
+      assert focused_app.datagrid_state.rows == [[1], [2]]
+
+      # Closing tab and reopening 'accounts' serves instantly from DataStore cache
+      closed_app = App.close_tab(loaded_app, loaded_app.active_tab_id)
+      cached_app = App.load_table_async(closed_app, "accounts")
       assert cached_app.status_message =~ "[Cache]"
       assert cached_app.datagrid_state.rows == [[1], [2]]
     end
@@ -415,10 +662,13 @@ defmodule Strata.UI.AppTest do
       {:noreply, ok_app} = App.handle_info({:connection_test_finished, :ok}, app)
       assert hd(ok_app.modals).status == :ok
 
+      app_f = App.new()
+
       {:noreply, filtered_app} =
         App.handle_info(
-          {:filter_query_finished, "id > 0", "", {:ok, %{columns: ["id"], rows: [[10]]}}},
-          App.new()
+          {:filter_query_finished, app_f.active_tab_id, "id > 0", "",
+           {:ok, %{columns: ["id"], rows: [[10]]}}},
+          app_f
         )
 
       assert filtered_app.datagrid_state.rows == [[10]]
@@ -455,23 +705,27 @@ defmodule Strata.UI.AppTest do
                App.handle_event(%ExRatatui.Event.Key{code: "q", modifiers: []}, nav_app)
     end
 
-    test "opens CellDetailModal only on double-click within threshold and supports editor click cursor" do
+    test "opens Right Inspector only on double-click within threshold and supports editor click cursor" do
       grid = Strata.UI.Components.DataGrid.new(["id", "name"], [[1, "Alice"]])
       app = App.new(active_view: :table_view, datagrid_state: grid, window_size: {120, 40})
+      dg = Strata.UI.Renderer.layout({120, 40}, :table_view).datagrid
 
       # First click selects cell
-      clicked1 = App.handle_mouse(app, {:click, 33, 2})
+      clicked1 = App.handle_mouse(app, {:click, 33, dg.y + 2})
       assert clicked1.datagrid_state.selected_cell == {0, 0}
       assert clicked1.modals == []
+      assert clicked1.inspector_open == false
 
-      # Immediate second click opens CellDetailModal
-      clicked2 = App.handle_mouse(clicked1, {:click, 33, 2})
-      assert match?([%Strata.UI.Components.CellDetailModal{}], clicked2.modals)
+      # Immediate second click opens Right Inspector Drawer
+      clicked2 = App.handle_mouse(clicked1, {:click, 33, dg.y + 2})
+      assert clicked2.modals == []
+      assert clicked2.inspector_open == true
 
-      # Stale timestamp (> 500ms ago) on same cell does not open modal
+      # Stale timestamp (> 500ms ago) on same cell does not open inspector
       stale = %{clicked1 | last_grid_click: {{0, 0}, System.monotonic_time(:millisecond) - 1000}}
-      clicked_stale = App.handle_mouse(stale, {:click, 33, 2})
+      clicked_stale = App.handle_mouse(stale, {:click, 33, dg.y + 2})
       assert clicked_stale.modals == []
+      assert clicked_stale.inspector_open == false
 
       # Clicking inside SQL Editor places cursor on clicked row/col
       query_app =
@@ -479,7 +733,7 @@ defmodule Strata.UI.AppTest do
         |> put_in([Access.key(:tabs), Access.at(0), :content], "SELECT *\nFROM users")
 
       layout = Strata.UI.Renderer.layout({120, 40}, :query_view)
-      placed = App.handle_mouse(query_app, {:click, layout.editor.x + 10, layout.editor.y + 3})
+      placed = App.handle_mouse(query_app, {:click, layout.editor.x + 10, layout.editor.y + 2})
       assert placed.focus == :editor
       assert hd(placed.tabs).cursor == {1, 3}
     end
@@ -660,18 +914,15 @@ defmodule Strata.UI.AppTest do
           selected_cell: {0, 1}
         )
 
-      # 1. Bracketed Event.Paste into FilterExportModal (strips newlines, inserts at cursor)
+      # 1. Bracketed Event.Paste into Unified Filter & Sort Bar
       filter_app =
         App.new(focus: :datagrid, datagrid_state: grid)
-        |> App.open_filter_modal()
-
-      assert hd(filter_app.modals).columns == ["id", "name"]
-      assert hd(filter_app.modals).where_clause == "name = "
+        |> App.open_filter_bar()
 
       {:noreply, pasted_filter_app} =
-        App.handle_event(%ExRatatui.Event.Paste{content: "'Alice'\n"}, filter_app)
+        App.handle_event(%ExRatatui.Event.Paste{content: "Alice\n"}, filter_app)
 
-      assert hd(pasted_filter_app.modals).where_clause == "name = 'Alice'"
+      assert pasted_filter_app.filter_bar_text == "Alice"
 
       # 2. Bracketed Event.Paste into ConnectionModal
       conn_app =
@@ -710,17 +961,25 @@ defmodule Strata.UI.AppTest do
                new: "ClipboardVal"
              }
 
-      # 4. Applying filter stores active_filter and re-opening Filter modal restores it
+      # 4. Applying filter stores active_filter and re-opening Filter Bar restores it
       applied_app = App.handle_key(pasted_filter_app, :enter)
-      assert applied_app.active_filter == %{where: "name = 'Alice'", order_by: "", limit: nil}
 
-      reopened_app = App.open_filter_modal(applied_app)
-      assert hd(reopened_app.modals).where_clause == "name = 'Alice'"
+      assert applied_app.active_filter == %{
+               mode: :builder,
+               column: "name",
+               op: :contains,
+               value: "Alice",
+               summary: "name contains Alice"
+             }
 
-      # Clearing filter resets active_filter
-      clear_focused = %{hd(reopened_app.modals) | focused_field: :clear_button}
-      cleared_app = App.handle_key(%{reopened_app | modals: [clear_focused]}, :enter)
+      reopened_app = App.open_filter_bar(applied_app)
+      assert reopened_app.filter_bar_col == "name"
+      assert reopened_app.filter_bar_text == "Alice"
+
+      # Clearing filter with Ctrl+L resets active_filter
+      cleared_app = App.handle_key(reopened_app, {:ctrl, "l"})
       assert cleared_app.active_filter == nil
+      assert cleared_app.filter_bar_open == false
     end
 
     test "supports Visual Smart Filter Bar (* All, Col/Op/Val, Shift+F 1-click, SQL toggle) and Right Inspector Drawer" do
@@ -745,7 +1004,6 @@ defmodule Strata.UI.AppTest do
       quick_open = App.handle_key(app, "/")
       assert quick_open.filter_bar_open == true
       assert quick_open.filter_bar_focused == true
-      assert quick_open.filter_bar_mode == :builder
       assert quick_open.filter_bar_col == "* All"
       assert quick_open.filter_bar_op == :contains
       assert Strata.UI.KeyRegistry.determine_context(quick_open) == :filter_bar
@@ -777,7 +1035,7 @@ defmodule Strata.UI.AppTest do
       assert col_open.filter_bar_col == "name"
       assert col_open.filter_bar_focus_part == :value
 
-      on_col = App.handle_key(col_open, :tab)
+      on_col = col_open |> App.handle_key(:shift_tab) |> App.handle_key(:shift_tab)
       assert on_col.filter_bar_focus_part == :column
       cycled_col = App.handle_key(on_col, :right)
       assert cycled_col.filter_bar_col == "meta"
@@ -797,13 +1055,16 @@ defmodule Strata.UI.AppTest do
       cycled_op = App.handle_key(on_op, :right)
       assert cycled_op.filter_bar_op == :starts_with
 
-      raw_mode = App.handle_key(cycled_op, {:ctrl, "r"})
-      assert raw_mode.filter_bar_mode == :raw
-
-      # Clearing filter bar when NO active_filter exists does NOT trigger DB reload
+      # Unified Filter & Sort Bar exposes Sort pill without Raw SQL mode toggle
       layout = Strata.UI.Renderer.layout({120, 40}, :table_view)
       areas = Strata.UI.Renderer.datagrid_areas(layout.datagrid, col_open)
       rects = Strata.UI.Renderer.filter_bar_rects(areas.filter_area, col_open)
+      refute Map.has_key?(rects, :mode_rect)
+      assert Map.has_key?(rects, :sort_rect)
+
+      # Clicking [Sort ▾] opens unified Sort dropdown
+      sort_dd_app = App.handle_mouse(col_open, {:click, rects.sort_rect.x, rects.sort_rect.y})
+      assert sort_dd_app.filter_dropdown == :sort
 
       closed_no_reload =
         App.handle_mouse(col_open, {:click, rects.clear_rect.x, rects.clear_rect.y})
@@ -993,10 +1254,15 @@ defmodule Strata.UI.AppTest do
 
       # 1. Apply Shift+F filter on category='book', then sort by name header -> filter is preserved!
       filtered = App.handle_key(app, "F")
-      assert_receive {:filter_query_finished, "category = book", "", {:ok, res1}}, 2_000
+      tab_id = filtered.active_tab_id
+
+      assert_receive {:filter_query_finished, ^tab_id, "category = book", "", {:ok, res1}}, 2_000
 
       {:noreply, filtered_loaded} =
-        App.handle_info({:filter_query_finished, "category = book", "", {:ok, res1}}, filtered)
+        App.handle_info(
+          {:filter_query_finished, tab_id, "category = book", "", {:ok, res1}},
+          filtered
+        )
 
       assert length(filtered_loaded.datagrid_state.rows) == 2
 
@@ -1068,7 +1334,7 @@ defmodule Strata.UI.AppTest do
       # 3. Typing does NOT auto-run; query only executes when clicking [Run] or pressing Enter
       typed = App.handle_key(cleared_hist, "j")
       assert typed.filter_bar_text == "j"
-      refute_receive {:filter_query_finished, "* All contains j", "", _}, 100
+      refute_receive {:filter_query_finished, ^tab_id, "* All contains j", "", _}, 100
 
       # 4. Clickable [Run] and [×] pills work cleanly via mouse coordinates
       layout = Strata.UI.Renderer.layout({120, 40}, :table_view)
@@ -1077,7 +1343,10 @@ defmodule Strata.UI.AppTest do
 
       clicked_run = App.handle_mouse(typed, {:click, rects.run_rect.x, rects.run_rect.y})
       assert clicked_run.filter_bar_focused == false
-      assert_receive {:filter_query_finished, "* All contains j", "", {:ok, res_j}}, 2_000
+
+      assert_receive {:filter_query_finished, ^tab_id, "* All contains j", "", {:ok, res_j}},
+                     2_000
+
       assert length(res_j.rows) == 1
       assert hd(res_j.rows) == [3, "music", "Jazz"]
 
@@ -1094,25 +1363,63 @@ defmodule Strata.UI.AppTest do
           clicked_clear
         )
 
-      # 5. In Browsing mode, pressing 'o' opens Sort Column Picker (avoiding blind sorting)
+      # 5. In Browsing mode, pressing 'o' opens Unified Filter & Sort Bar directly on Sort dropdown
       browsing_app = %{
         reloaded_clear
         | datagrid_state: %{reloaded_clear.datagrid_state | mode: :browsing}
       }
 
       sp_app = App.handle_key(browsing_app, "o")
-      assert sp_app.sort_picker_open == true
-      assert Strata.UI.KeyRegistry.determine_context(sp_app) == :sort_picker
+      assert sp_app.filter_bar_open == true
+      assert sp_app.filter_dropdown == :sort
+      assert Strata.UI.KeyRegistry.determine_context(sp_app) == :filter_bar
 
-      # Mouse wheel scroll locks inside sort picker without scrolling background grid
+      # Mouse wheel scroll locks inside sort dropdown without scrolling background grid
       sp_scrolled = App.handle_mouse(sp_app, {:scroll, :down, 50, 10})
-      assert sp_scrolled.sort_picker_idx == 1
+      assert sp_scrolled.filter_dropdown_idx == 1
 
-      # Typing narrows columns and Enter sorts the picked column cleanly
+      # Pressing Esc while transient sort dropdown is open closes both dropdown and bar
+      esc_sort = App.handle_key(sp_app, :esc)
+      assert esc_sort.filter_dropdown == nil
+      assert esc_sort.filter_bar_open == false
+
+      # Typing narrows columns and Enter sorts the picked column cleanly & collapses transient bar
       sp_typed = App.handle_key(sp_app, "c")
       picked_sort = App.handle_key(sp_typed, :enter)
-      assert picked_sort.sort_picker_open == false
+      assert picked_sort.filter_dropdown == nil
+      assert picked_sort.filter_bar_open == false
       assert picked_sort.datagrid_state.sort_by == {"category", :asc}
+
+      assert_receive {:table_sorted_loaded, s2_req_id, "products", {"category", :asc}, s2_res},
+                     2_000
+
+      {:noreply, sorted_cat} =
+        App.handle_info(
+          {:table_sorted_loaded, s2_req_id, "products", {"category", :asc}, s2_res},
+          picked_sort
+        )
+
+      # 6. Unified bar Tab cycling + Ctrl+G opens current table/filter/sort in SQL Editor tab
+      unified = App.handle_key(sorted_cat, "f")
+      assert unified.filter_bar_focus_part == :value
+      assert App.handle_key(unified, :tab).filter_bar_focus_part == :sort
+
+      assert unified
+             |> App.handle_key(:tab)
+             |> App.handle_key(:tab)
+             |> Map.get(:filter_bar_focus_part) == :column
+
+      {:noreply, typed_for_sql} =
+        App.handle_event(%ExRatatui.Event.Paste{content: "book"}, unified)
+
+      sql_tab_app = App.handle_key(typed_for_sql, {:ctrl, "g"})
+      assert sql_tab_app.active_view == :query_view
+      assert sql_tab_app.focus == :editor
+      active_sql_tab = Enum.find(sql_tab_app.tabs, &(&1.id == sql_tab_app.active_tab_id))
+      assert active_sql_tab.content =~ "SELECT *"
+      assert active_sql_tab.content =~ "\"products\""
+      assert active_sql_tab.content =~ "LIKE '%book%'"
+      assert active_sql_tab.content =~ "ORDER BY \"category\" ASC"
     end
 
     test "restarts worker on ConnectionModal edit, confirms before delete, filters sidebar with /, and renders active DB on SQL Editor" do
@@ -1294,6 +1601,74 @@ defmodule Strata.UI.AppTest do
 
       assert damped_h.datagrid_state.col_offset == 0
       assert Keyword.get(opts_h, :render?) == false
+    end
+
+    test "hotkey fixes: sidebar filter 'q' does not quit, '-' clears sort, 'e'/'E'/'d' unified, Ctrl+P & Ctrl+K work" do
+      # 1. Typing 'q' inside sidebar filter types 'q' instead of quitting app
+      filtering_app = App.new(focus: :sidebar, sidebar_filter_active: true, sidebar_filter: "")
+
+      assert {:noreply, typed_app} =
+               App.handle_event(%ExRatatui.Event.Key{code: "q", modifiers: []}, filtering_app)
+
+      assert typed_app.sidebar_filter == "q"
+
+      # 2. F4 event toggles Right Inspector Drawer via map_ex_ratatui_key
+      grid_app =
+        App.new(
+          focus: :datagrid,
+          active_view: :table_view,
+          datagrid_state:
+            Strata.UI.Components.DataGrid.new(["id", "name"], [[1, "Alpha"]],
+              sort_by: {"name", :asc}
+            )
+        )
+
+      {:noreply, f4_app} =
+        App.handle_event(%ExRatatui.Event.Key{code: "f4", modifiers: []}, grid_app)
+
+      assert f4_app.inspector_open == true
+
+      # 3. '-' clears active sort in both :browsing and :selecting modes
+      cleared_browsing = App.handle_key(grid_app, "-")
+      assert cleared_browsing.datagrid_state.sort_by == nil
+
+      selecting_sorted = %{
+        grid_app
+        | datagrid_state: %{grid_app.datagrid_state | mode: :selecting}
+      }
+
+      cleared_selecting = App.handle_key(selecting_sorted, "-")
+      assert cleared_selecting.datagrid_state.sort_by == nil
+
+      # 4. In :browsing mode, 'e' edits cell, 'E' opens ExportModal, and 'd' marks row for delete
+      editing_from_browsing = App.handle_key(grid_app, "e")
+      assert editing_from_browsing.datagrid_state.editing_cell == {0, 0}
+
+      export_from_browsing = App.handle_key(grid_app, "E")
+      assert match?([%Strata.UI.Components.ExportModal{}], export_from_browsing.modals)
+
+      deleted_from_browsing = App.handle_key(grid_app, "d")
+      assert MapSet.member?(deleted_from_browsing.datagrid_state.pending_deletes, 0)
+
+      # 5. Sidebar lowercase 's' opens SSHModal just like 'S'
+      ssh_app = App.handle_key(App.new(focus: :sidebar), "s")
+      assert match?([%Strata.UI.Components.SSHModal{}], ssh_app.modals)
+
+      # 6. Ctrl+P opens context-aware ActionsModal from :editor and Ctrl+K clears SQL editor
+      editor_app =
+        App.new(focus: :editor)
+        |> put_in([Access.key(:tabs), Access.at(0), :content], "SELECT * FROM users")
+        |> put_in([Access.key(:tabs), Access.at(0), :cursor], {0, 19})
+
+      actions_from_editor = App.handle_key(editor_app, {:ctrl, "p"})
+
+      assert [%Strata.UI.Components.ActionsModal{items: items}] = actions_from_editor.modals
+      assert hd(items).id == :run_query
+
+      cleared_editor = App.handle_key(editor_app, {:ctrl, "k"})
+      active_tab = Enum.find(cleared_editor.tabs, &(&1.id == cleared_editor.active_tab_id))
+      assert active_tab.content == ""
+      assert active_tab.cursor == {0, 0}
     end
   end
 end

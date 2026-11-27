@@ -9,7 +9,6 @@ defmodule Strata.UI.KeyRegistry do
   """
   @spec determine_context(map()) :: atom()
   def determine_context(%{modals: [_ | _]}), do: :modal
-  def determine_context(%{sort_picker_open: true}), do: :sort_picker
   def determine_context(%{filter_bar_open: true, filter_bar_focused: true}), do: :filter_bar
   def determine_context(%{focus: :sidebar, sidebar_filter_active: true}), do: :sidebar_filter
   def determine_context(%{focus: :sidebar}), do: :sidebar
@@ -57,22 +56,23 @@ defmodule Strata.UI.KeyRegistry do
 
       :sidebar ->
         [
-          {"Ctrl+1/2", "Table/Query View"},
-          {"/", "Find"},
-          {"r", "Refresh"},
+          {"Tab", "Pane"},
+          {"Ctrl+T", "New SQL Tab"},
           {"a", "Add Conn"},
-          {"e/d", "Edit/Del"},
           {"S", "SSH"},
+          {"r", "Refresh"},
+          {"/", "Find"},
           {"?", "Actions"}
         ]
 
       :editor ->
         [
-          {"Ctrl+1/2", "Table/Query View"},
           {"Ctrl+Enter", "Run"},
+          {"Ctrl+Space", "Complete"},
           {"Ctrl+T", "New Tab"},
-          {"Esc", "Grid"},
-          {"Tab", "Pane"}
+          {"Ctrl+W", "Close"},
+          {"Ctrl+←/→", "Tabs"},
+          {"Ctrl+P", "Actions"}
         ]
 
       :datagrid_editing ->
@@ -80,14 +80,6 @@ defmodule Strata.UI.KeyRegistry do
           {"Enter", "Stage"},
           {"Ctrl+N", "NULL"},
           {"Esc", "Cancel"}
-        ]
-
-      :sort_picker ->
-        [
-          {"↑/↓", "Pick Col"},
-          {"Type", "Search"},
-          {"Enter", "Sort"},
-          {"Esc", "Close"}
         ]
 
       :filter_bar ->
@@ -107,30 +99,27 @@ defmodule Strata.UI.KeyRegistry do
               {"Esc", "Close"}
             ]
 
-          Map.get(app, :filter_bar_mode, :builder) == :raw ->
+          Map.get(app, :filter_dropdown) == :sort ->
             [
-              {"Enter", "Apply"},
-              {"Ctrl+V", "Paste"},
-              {"Ctrl+U", "Clear"},
-              {"Ctrl+R", "Builder"},
-              {"Ctrl+L", "Reset"}
+              {"↑/↓", "Pick Col"},
+              {"Type", "Search"},
+              {"Enter", "Sort"},
+              {"Esc", "Close"}
             ]
 
-          Map.get(app, :filter_bar_focus_part, :value) in [:column, :op] ->
+          Map.get(app, :filter_bar_focus_part, :value) in [:column, :op, :sort] ->
             [
-              {"↑/↓", "Change"},
+              {"↑/↓", "Pick"},
               {"Tab", "Next"},
-              {"Enter", "Apply"},
-              {"Ctrl+R", "SQL"},
+              {"Ctrl+G", "SQL Tab"},
               {"Ctrl+L", "Reset"}
             ]
 
           true ->
             [
               {"Enter", "Apply"},
-              {"Tab", "Col/Op"},
-              {"Ctrl+V", "Paste"},
-              {"Ctrl+R", "SQL"},
+              {"Tab", "Col/Op/Sort"},
+              {"Ctrl+G", "SQL Tab"},
               {"Ctrl+L", "Reset"}
             ]
         end
@@ -150,26 +139,40 @@ defmodule Strata.UI.KeyRegistry do
         [
           {"Enter", "Inspect"},
           {"e", "Edit"},
-          {"i/d", "+/-Row"},
-          {"c/Y", "Copy"},
+          {"d", "Del"},
+          {"c", "Copy"},
+          {"E", "Export"},
           {"?", "Actions"},
           {"Esc", "Back"}
         ]
 
       :datagrid_browsing ->
-        [
-          {"Tab", "Pane"},
-          {"v", "Select"},
-          {"s", "Structure"},
-          {"f", "Filter"},
-          {"?", "Actions"},
-          {"q", "Quit"}
-        ]
+        if Map.get(app, :active_view) == :table_view do
+          [
+            {"Tab", "Pane"},
+            {"v", "Select"},
+            {"f", "Filter"},
+            {"s", "Structure"},
+            {"Ctrl+G", "SQL"},
+            {"E", "Export"},
+            {"?", "Actions"}
+          ]
+        else
+          [
+            {"Tab", "Pane"},
+            {"v", "Select"},
+            {"f", "Filter"},
+            {"E", "Export"},
+            {"Ctrl+T", "New SQL"},
+            {"?", "Actions"}
+          ]
+        end
 
       _ ->
         [
-          {"Ctrl+1/2", "Table/Query View"},
           {"Tab", "Pane"},
+          {"Ctrl+T", "New SQL Tab"},
+          {"Ctrl+W", "Close"},
           {"?", "Actions"},
           {"q", "Quit"}
         ]

@@ -12,8 +12,6 @@ defmodule Strata.UI.Components.DataGrid do
             rows_tuple: nil,
             cached_static_widths: [],
             selected_cell: {0, 0},
-            page: 1,
-            page_size: 20,
             total_rows: 0,
             total_db_rows: nil,
             mode: :browsing,
@@ -36,8 +34,6 @@ defmodule Strata.UI.Components.DataGrid do
           rows_tuple: tuple() | nil,
           cached_static_widths: [pos_integer()],
           selected_cell: cell(),
-          page: pos_integer(),
-          page_size: pos_integer(),
           total_rows: non_neg_integer(),
           total_db_rows: non_neg_integer() | nil,
           mode: mode(),
@@ -60,8 +56,6 @@ defmodule Strata.UI.Components.DataGrid do
   """
   @spec new([String.t()], [list()], keyword()) :: t()
   def new(columns \\ [], rows \\ [], opts \\ []) do
-    page_size = Keyword.get(opts, :page_size, 20)
-    page = Keyword.get(opts, :page, 1)
     selected_cell = Keyword.get(opts, :selected_cell, {0, 0})
     mode = Keyword.get(opts, :mode, :browsing)
     scroll_offset = Keyword.get(opts, :scroll_offset, 0)
@@ -82,8 +76,6 @@ defmodule Strata.UI.Components.DataGrid do
       rows_tuple: List.to_tuple(rows),
       cached_static_widths: static_w,
       selected_cell: selected_cell,
-      page: page,
-      page_size: page_size,
       total_rows: length(rows),
       total_db_rows: total_db_rows,
       mode: mode,
@@ -493,22 +485,13 @@ defmodule Strata.UI.Components.DataGrid do
   end
 
   @doc """
-  Calculates total number of pages.
+  Returns the slice of rows currently visible in the viewport from `scroll_offset`.
   """
-  @spec total_pages(t()) :: pos_integer()
-  def total_pages(%__MODULE__{total_rows: 0}), do: 1
-
-  def total_pages(%__MODULE__{total_rows: total, page_size: size}) do
-    max(1, ceil(total / size))
-  end
-
-  @doc """
-  Returns slice of rows for current page.
-  """
-  @spec page_rows(t()) :: [list()]
-  def page_rows(%__MODULE__{rows: rows, page: page, page_size: size}) do
-    offset = (page - 1) * size
-    Enum.slice(rows, offset, size)
+  @spec visible_rows(t(), pos_integer()) :: [list()]
+  def visible_rows(%__MODULE__{rows: rows, scroll_offset: offset}, viewport_h \\ 20) do
+    rows
+    |> Enum.drop(max(0, offset || 0))
+    |> Enum.take(max(1, viewport_h))
   end
 
   @doc """
@@ -764,50 +747,6 @@ defmodule Strata.UI.Components.DataGrid do
   end
 
   @doc """
-  Sets page index, clamping to valid page range, and syncs `scroll_offset` + `selected_cell`
-  so pagination visibly updates the DataGrid viewport.
-  """
-  @spec set_page(t(), integer()) :: t()
-  def set_page(%__MODULE__{} = grid, page) do
-    tot = total_pages(grid)
-    clamped_page = max(1, min(tot, page))
-    new_scroll = (clamped_page - 1) * grid.page_size
-    max_row = max(0, length(grid.rows) - 1)
-    target_row = min(max_row, new_scroll)
-
-    %{
-      grid
-      | page: clamped_page,
-        scroll_offset: new_scroll,
-        selected_cell: {target_row, elem(grid.selected_cell, 1)}
-    }
-  end
-
-  @doc """
-  Advances to next page.
-  """
-  @spec next_page(t()) :: t()
-  def next_page(grid), do: set_page(grid, grid.page + 1)
-
-  @doc """
-  Navigates to previous page.
-  """
-  @spec prev_page(t()) :: t()
-  def prev_page(grid), do: set_page(grid, grid.page - 1)
-
-  @doc """
-  Navigates to first page.
-  """
-  @spec first_page(t()) :: t()
-  def first_page(grid), do: set_page(grid, 1)
-
-  @doc """
-  Navigates to last page.
-  """
-  @spec last_page(t()) :: t()
-  def last_page(grid), do: set_page(grid, total_pages(grid))
-
-  @doc """
   Handles key events for DataGrid depending on mode (:browsing vs :selecting).
   Accepts optional `opts` keyword list (e.g. `viewport_h: 30`).
   """
@@ -837,6 +776,12 @@ defmodule Strata.UI.Components.DataGrid do
         new_app = Strata.UI.App.open_sort_picker(app)
         {new_app, new_app.datagrid_state || grid}
 
+      "-" ->
+        handle_clear_sort_key(app, grid)
+
+      "e" ->
+        handle_edit_cell_key(app, grid)
+
       "i" ->
         updated_grid =
           if grid.view_mode == :data do
@@ -846,6 +791,9 @@ defmodule Strata.UI.Components.DataGrid do
           end
 
         {app, updated_grid}
+
+      k when k in ["d", :delete] ->
+        handle_delete_row_key(app, grid)
 
       {:ctrl, "z"} ->
         {app, revert_staged_changes(grid)}
@@ -907,8 +855,8 @@ defmodule Strata.UI.Components.DataGrid do
         new_app = Strata.UI.App.dismiss_grid_overlays(app)
         {new_app, new_app.datagrid_state || grid}
 
-      k when k in ["e", "E", {:ctrl, "e"}] ->
-        app = Strata.UI.App.push_modal(app, Strata.UI.Components.FilterExportModal.new(:export))
+      k when k in ["E", {:ctrl, "e"}] ->
+        app = Strata.UI.App.push_modal(app, Strata.UI.Components.ExportModal.new())
         {app, grid}
 
       k when k in ["r", "R", :f5] ->
@@ -920,12 +868,6 @@ defmodule Strata.UI.Components.DataGrid do
 
       "Y" ->
         copy_selected_row(app, grid)
-
-      k when k in [:n, "n", "N", {:ctrl, "n"}] ->
-        {app, next_page(grid)}
-
-      k when k in [:p, "p", "P", {:ctrl, "p"}] ->
-        {app, prev_page(grid)}
 
       _ ->
         {app, grid}
@@ -959,13 +901,11 @@ defmodule Strata.UI.Components.DataGrid do
         new_app = Strata.UI.App.sort_active_table_by_col(app, c)
         {new_app, new_app.datagrid_state || grid}
 
+      "-" ->
+        handle_clear_sort_key(app, grid)
+
       "e" ->
-        if grid.view_mode == :data and grid.columns != [] do
-          new_app = Strata.UI.App.start_inline_edit(app)
-          {new_app, new_app.datagrid_state || grid}
-        else
-          {app, grid}
-        end
+        handle_edit_cell_key(app, grid)
 
       "i" ->
         if grid.view_mode == :data and grid.columns != [] do
@@ -975,12 +915,7 @@ defmodule Strata.UI.Components.DataGrid do
         end
 
       k when k in ["d", :delete] ->
-        if grid.view_mode == :data and effective_rows(grid) != [] do
-          {r, _c} = grid.selected_cell
-          {app, toggle_delete_row(grid, r)}
-        else
-          {app, grid}
-        end
+        handle_delete_row_key(app, grid)
 
       {:ctrl, "z"} ->
         {app, revert_staged_changes(grid)}
@@ -1039,12 +974,6 @@ defmodule Strata.UI.Components.DataGrid do
       "G" ->
         {app, move_selection(grid, :end, vh, opts)}
 
-      k when k in [:n, "n", "N", {:ctrl, "n"}] ->
-        {app, next_page(grid)}
-
-      k when k in [:p, "p", "P", {:ctrl, "p"}] ->
-        {app, prev_page(grid)}
-
       "F" ->
         new_app = Strata.UI.App.filter_by_selected_cell(app)
         {new_app, new_app.datagrid_state || grid}
@@ -1055,7 +984,7 @@ defmodule Strata.UI.Components.DataGrid do
         {new_app, new_app.datagrid_state || grid}
 
       k when k in ["E", {:ctrl, "e"}] ->
-        app = Strata.UI.App.push_modal(app, Strata.UI.Components.FilterExportModal.new(:export))
+        app = Strata.UI.App.push_modal(app, Strata.UI.Components.ExportModal.new())
         {app, grid}
 
       k when k in ["r", "R", :f5] ->
@@ -1068,6 +997,32 @@ defmodule Strata.UI.Components.DataGrid do
   end
 
   def handle_key(app, grid, _key, _opts), do: {app, grid}
+
+  defp handle_edit_cell_key(app, %__MODULE__{view_mode: :data, columns: cols} = grid)
+       when cols != [] do
+    new_app = Strata.UI.App.start_inline_edit(app)
+    {new_app, new_app.datagrid_state || grid}
+  end
+
+  defp handle_edit_cell_key(app, grid), do: {app, grid}
+
+  defp handle_delete_row_key(app, %__MODULE__{view_mode: :data} = grid) do
+    if effective_rows(grid) != [] do
+      {r, _c} = grid.selected_cell
+      {app, toggle_delete_row(grid, r)}
+    else
+      {app, grid}
+    end
+  end
+
+  defp handle_delete_row_key(app, grid), do: {app, grid}
+
+  defp handle_clear_sort_key(app, %__MODULE__{sort_by: nil} = grid), do: {app, grid}
+
+  defp handle_clear_sort_key(app, grid) do
+    new_app = Strata.UI.App.clear_active_sort(app)
+    {new_app, new_app.datagrid_state || grid}
+  end
 
   defp handle_inspector_scroll_key(%{inspector_open: true} = app, key) do
     case key do
@@ -1359,73 +1314,5 @@ defmodule Strata.UI.Components.DataGrid do
         end
       end
     end
-  end
-
-  @doc """
-  Renders table layout data structure for given area.
-  """
-  def render(_app, area, %__MODULE__{} = grid \\ new()) do
-    p_rows = page_rows(grid)
-
-    col_widths =
-      Enum.map(Enum.with_index(grid.columns), fn {col_name, col_idx} ->
-        max_len =
-          p_rows
-          |> Enum.map(fn row -> to_string(Enum.at(row, col_idx, "")) |> String.length() end)
-          |> Enum.max(fn -> 0 end)
-
-        max(String.length(to_string(col_name)), max_len) + 2
-      end)
-
-    header_cells =
-      Enum.zip(grid.columns, col_widths)
-      |> Enum.map(fn {col_name, width} -> String.pad_trailing(to_string(col_name), width) end)
-      |> Enum.join("│")
-
-    header_line = "│" <> header_cells <> "│"
-    separator_line = String.duplicate("─", String.length(header_line))
-
-    row_lines =
-      p_rows
-      |> Enum.with_index()
-      |> Enum.map(fn {row, r_idx} ->
-        cells =
-          Enum.zip(row, col_widths)
-          |> Enum.with_index()
-          |> Enum.map(fn {{val, width}, c_idx} ->
-            str_val = String.pad_trailing(to_string(val), width)
-            is_selected? = grid.mode == :selecting and grid.selected_cell == {r_idx, c_idx}
-
-            if is_selected? do
-              "[#{String.trim(str_val)}]" |> String.pad_trailing(width)
-            else
-              str_val
-            end
-          end)
-          |> Enum.join("│")
-
-        %{
-          text: "│" <> cells <> "│",
-          selected_row?: grid.mode == :selecting and elem(grid.selected_cell, 0) == r_idx
-        }
-      end)
-
-    status = "Page #{grid.page} of #{total_pages(grid)} (Total #{grid.total_rows} rows)"
-
-    %{
-      title: "RESULT DATA GRID",
-      area: area,
-      columns: grid.columns,
-      page: grid.page,
-      total_pages: total_pages(grid),
-      total_rows: grid.total_rows,
-      selected_cell: grid.selected_cell,
-      status: status,
-      lines:
-        [
-          %{text: header_line, type: :header},
-          %{text: separator_line, type: :separator}
-        ] ++ row_lines
-    }
   end
 end

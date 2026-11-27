@@ -15,10 +15,58 @@ defmodule Strata.UI.Components.ActionsModal do
         }
 
   @doc """
-  Builds the contextual action list for the given `DataGrid` and source context.
+  Builds the contextual action list for the given `DataGrid`, source view, and focus pane.
   """
-  @spec new(DataGrid.t(), atom()) :: t()
-  def new(%DataGrid{} = grid \\ DataGrid.new(), data_source \\ :table_view) do
+  @spec new(DataGrid.t(), atom(), keyword()) :: t()
+  def new(%DataGrid{} = grid \\ DataGrid.new(), data_source \\ :table_view, opts \\ []) do
+    focus = Keyword.get(opts, :focus, :datagrid)
+    inspector_open? = Keyword.get(opts, :inspector_open, false)
+
+    items =
+      case focus do
+        :sidebar ->
+          sidebar_items() ++ navigation_items(data_source)
+
+        :editor ->
+          editor_result_items =
+            if grid.columns != [],
+              do: datagrid_items(grid, data_source, inspector_open?),
+              else: []
+
+          editor_items() ++ navigation_items(data_source) ++ editor_result_items
+
+        _ ->
+          datagrid_items(grid, data_source, inspector_open?) ++
+            [%{id: :sidebar_ssh, label: "SSH Tunnel Profiles", shortcut: "Sidebar S"}] ++
+            navigation_items(data_source)
+      end
+
+    %__MODULE__{items: items, selected_index: 0}
+  end
+
+  defp sidebar_items do
+    [
+      %{id: :sidebar_add_conn, label: "Add Database Connection", shortcut: "a"},
+      %{id: :sidebar_edit_conn, label: "Edit Selected Connection", shortcut: "e"},
+      %{id: :sidebar_delete_conn, label: "Delete Selected Connection", shortcut: "d"},
+      %{id: :sidebar_ssh, label: "SSH Tunnel Profiles", shortcut: "s / S"},
+      %{id: :sidebar_refresh, label: "Refresh Connection Schema", shortcut: "r / F5"},
+      %{id: :sidebar_filter, label: "Filter Sidebar Tree", shortcut: "/"},
+      %{id: :sidebar_expand_all, label: "Expand All Nodes", shortcut: "o"},
+      %{id: :sidebar_collapse_all, label: "Collapse All Nodes", shortcut: "c"}
+    ]
+  end
+
+  defp editor_items do
+    [
+      %{id: :run_query, label: "Run SQL Query", shortcut: "Ctrl+Enter"},
+      %{id: :trigger_autocomplete, label: "Trigger SQL Autocomplete", shortcut: "Ctrl+Space"},
+      %{id: :clear_editor, label: "Clear SQL Editor", shortcut: "Ctrl+K"},
+      %{id: :focus_grid, label: "Focus Result Grid", shortcut: "Esc"}
+    ]
+  end
+
+  defp datagrid_items(grid, data_source, inspector_open?) do
     dirty = DataGrid.dirty_count(grid)
     in_data? = grid.view_mode == :data
     items = []
@@ -36,11 +84,17 @@ defmodule Strata.UI.Components.ActionsModal do
 
     items =
       if in_data? and grid.columns != [] do
+        select_label =
+          if grid.mode == :selecting,
+            do: "Exit Select Mode (Browse)",
+            else: "Enter Select Mode (Cells)"
+
         items ++
           [
             %{id: :edit_cell, label: "Edit Selected Cell", shortcut: "e"},
             %{id: :insert_row, label: "Insert Blank Row", shortcut: "i"},
-            %{id: :delete_row, label: "Delete / Unmark Selected Row", shortcut: "d"}
+            %{id: :delete_row, label: "Delete / Unmark Selected Row", shortcut: "d"},
+            %{id: :toggle_select_mode, label: select_label, shortcut: "v"}
           ]
       else
         items
@@ -66,27 +120,58 @@ defmodule Strata.UI.Components.ActionsModal do
             do: "Switch to Table Structure View",
             else: "Switch to Table Data View"
 
-        items ++ [%{id: :toggle_structure, label: target_label, shortcut: "s / F3"}]
+        items ++
+          [
+            %{id: :toggle_structure, label: target_label, shortcut: "s / F3"},
+            %{id: :open_in_sql, label: "Open Table Query in SQL Editor", shortcut: "Ctrl+G"}
+          ]
       else
         items
       end
 
-    items =
-      items ++
+    inspector_items =
+      if inspector_open? do
         [
-          %{id: :filter_table, label: "Smart Filter Bar", shortcut: "f / /"},
-          %{id: :filter_by_cell, label: "Filter by Selected Cell Value", shortcut: "Shift+F"},
-          %{id: :clear_filter, label: "Clear Active Filter", shortcut: "Ctrl+L"},
           %{id: :toggle_inspector, label: "Toggle Right Inspector Drawer", shortcut: "I / F4"},
-          %{id: :export_data, label: "Export Data (CSV / JSON / SQL)", shortcut: "E"},
-          %{id: :copy_cell, label: "Copy Selected Cell", shortcut: "c"},
-          %{id: :copy_row, label: "Copy Entire Row (TSV)", shortcut: "Y"},
-          %{id: :next_page, label: "Next Page", shortcut: "n"},
-          %{id: :prev_page, label: "Previous Page", shortcut: "p"},
-          %{id: :refresh, label: "Refresh Table / Query", shortcut: "r"}
+          %{
+            id: :cycle_inspector_format,
+            label: "Cycle Inspector Format (Auto/Text/Raw)",
+            shortcut: "m"
+          }
         ]
+      else
+        [%{id: :toggle_inspector, label: "Toggle Right Inspector Drawer", shortcut: "I / F4"}]
+      end
 
-    %__MODULE__{items: items, selected_index: 0}
+    items ++
+      [
+        %{id: :filter_table, label: "Filter & Sort Bar", shortcut: "f / /"},
+        %{id: :filter_by_cell, label: "Filter by Selected Cell Value", shortcut: "Shift+F"},
+        %{id: :clear_filter, label: "Clear Active Filter", shortcut: "Ctrl+L"}
+      ] ++
+      inspector_items ++
+      [
+        %{id: :export_data, label: "Export Data (CSV / JSON / SQL)", shortcut: "E / Ctrl+E"},
+        %{id: :copy_cell, label: "Copy Selected Cell", shortcut: "c"},
+        %{id: :copy_row, label: "Copy Entire Row (TSV)", shortcut: "Y"},
+        %{id: :refresh, label: "Refresh Table / Query", shortcut: "r"}
+      ]
+  end
+
+  defp navigation_items(data_source) do
+    view_item =
+      if data_source == :table_view do
+        %{id: :switch_query_view, label: "Switch to SQL Query View", shortcut: "Ctrl+2 / F2"}
+      else
+        %{id: :switch_table_view, label: "Switch to Table Data View", shortcut: "Ctrl+1 / F1"}
+      end
+
+    [
+      view_item,
+      %{id: :new_sql_tab, label: "New SQL Query Tab", shortcut: "Ctrl+T"},
+      %{id: :close_tab, label: "Close Current Tab", shortcut: "Ctrl+W"},
+      %{id: :next_tab, label: "Switch Next Tab", shortcut: "Ctrl+→"}
+    ]
   end
 
   @doc """

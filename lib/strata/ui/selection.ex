@@ -36,7 +36,7 @@ defmodule Strata.UI.Selection do
         selection_capture?: true
       })
 
-    widgets = Renderer.render(clean_app)
+    %{widgets: widgets, wrapped_regions: wrapped_regions} = Renderer.render_scene(clean_app)
 
     session = ExRatatui.CellSession.new(w, h)
 
@@ -72,7 +72,24 @@ defmodule Strata.UI.Selection do
           {Map.put(acc, cell.row, Map.put(row_map, cell.col, sym)), cell.row, next_skip_until}
         end)
 
-      %{width: w, height: h, rows: rows}
+      wrap_regions =
+        Map.new(wrapped_regions, fn %{bounds: b, rows: region_rows} ->
+          resolved_rows =
+            Map.new(region_rows, fn {row_y, %{continued?: cont?, text: text}} ->
+              dw = display_width(text)
+
+              end_x =
+                if dw == 0,
+                  do: b.min_x - 1,
+                  else: min(b.max_x, b.min_x + dw - 1)
+
+              {row_y, %{continued?: cont?, content_end_x: end_x}}
+            end)
+
+          {b, resolved_rows}
+        end)
+
+      %{width: w, height: h, rows: rows, wrap_regions: wrap_regions}
     after
       _ = ExRatatui.CellSession.close(session)
     end
@@ -98,45 +115,24 @@ defmodule Strata.UI.Selection do
         areas = Renderer.datagrid_areas(layout.datagrid, app)
         insp_areas = Renderer.inspector_areas(areas.inspector_area)
         filter_dd = Renderer.filter_dropdown_data(app, layout.datagrid)
-        sort_dd = Renderer.sort_picker_data(app, layout.datagrid)
 
         editor_comp =
           if layout.editor.height > 0,
             do: Renderer.editor_completion_rect(app, layout.editor),
             else: nil
 
-        {editor_tabs, editor_body} =
-          if layout.editor.height > 0 do
-            tabs = %{
-              x: layout.editor.x,
-              y: layout.editor.y,
-              width: layout.editor.width,
-              height: 1
-            }
-
-            body = %{
-              x: layout.editor.x,
-              y: layout.editor.y + 1,
-              width: layout.editor.width,
-              height: max(1, layout.editor.height - 1)
-            }
-
-            {tabs, body}
-          else
-            {nil, nil}
-          end
+        editor_rect = if layout.editor.height > 0, do: layout.editor, else: nil
 
         candidates =
           [
             filter_dd && filter_dd.rect,
-            sort_dd && sort_dd.rect,
             editor_comp,
             insp_areas && insp_areas.value_area,
             insp_areas && insp_areas.summary_area,
             areas.filter_area,
             areas.grid_area,
-            editor_body,
-            editor_tabs,
+            editor_rect,
+            layout.tabs,
             layout.sidebar,
             layout.footer
           ]
@@ -149,9 +145,9 @@ defmodule Strata.UI.Selection do
           rect ->
             b = inner_rect_bounds(rect)
 
-            # In SQL Editor body, if drag starts in code region (past line-number gutter), keep selection inside code
-            if rect == editor_body do
-              code_min_x = editor_code_min_x(app, editor_body)
+            # In SQL Editor, if drag starts in code region (past line-number gutter), keep selection inside code
+            if rect == editor_rect do
+              code_min_x = editor_code_min_x(app, editor_rect)
 
               if ax >= code_min_x and code_min_x <= b.max_x do
                 %{b | min_x: code_min_x}
@@ -192,21 +188,63 @@ defmodule Strata.UI.Selection do
   end
 
   @doc """
-  Extracts clean text from the captured `screen` across the dragged selection range.
+  Extracts clean text from the captured `screen` across the dragged selection range,
+  joining soft-wrapped continuation lines seamlessly while preserving real `\\n` breaks.
   """
   @spec extract_text(map(), point(), point(), bounds()) :: String.t()
-  def extract_text(%{rows: rows} = _screen, anchor, current, bounds) do
+  def extract_text(%{rows: rows} = screen, anchor, current, bounds) do
+    region_rows = Map.get(Map.get(screen, :wrap_regions, %{}), bounds, %{})
+
     selection_spans(anchor, current, bounds)
     |> Enum.map(fn {y, x_from, x_to} ->
       row_map = Map.get(rows, y, %{})
+      meta = Map.get(region_rows, y)
 
-      {_adj_from, _adj_to, text} =
-        read_span_text(row_map, x_from, x_to, bounds.min_x, bounds.max_x, overlay?: false)
+      {effective_to, trim_trailing?} =
+        case meta do
+          %{content_end_x: end_x} when x_to >= end_x -> {end_x, false}
+          %{content_end_x: _end_x} -> {x_to, false}
+          nil -> {x_to, true}
+        end
 
-      String.trim_trailing(text)
+      text =
+        if effective_to < x_from do
+          ""
+        else
+          {_adj_from, _adj_to, raw} =
+            read_span_text(row_map, x_from, effective_to, bounds.min_x, bounds.max_x,
+              overlay?: false
+            )
+
+          if trim_trailing?, do: String.trim_trailing(raw), else: raw
+        end
+
+      %{
+        text: text,
+        continued?: meta != nil and meta.continued?,
+        reached_end?: meta != nil and x_to >= meta.content_end_x
+      }
     end)
     |> trim_empty_edge_lines()
-    |> Enum.join("\n")
+    |> join_extracted_lines()
+  end
+
+  defp join_extracted_lines([]), do: ""
+
+  defp join_extracted_lines(items) do
+    {joined, _last} =
+      Enum.reduce(items, nil, fn item, acc ->
+        case acc do
+          nil ->
+            {item.text, item}
+
+          {buf, prev} ->
+            sep = if item.continued? and prev.reached_end?, do: "", else: "\n"
+            {buf <> sep <> item.text, item}
+        end
+      end)
+
+    joined
   end
 
   @doc """
@@ -329,11 +367,19 @@ defmodule Strata.UI.Selection do
     Strata.UI.Cache.fetch(:selection_grapheme_width, sym, 2_000, fn -> 1 end)
   end
 
+  defp display_width(""), do: 0
+
+  defp display_width(text) when is_binary(text) do
+    text
+    |> String.graphemes()
+    |> Enum.reduce(0, fn g, acc -> acc + grapheme_width(g) end)
+  end
+
   defp editor_code_min_x(app, editor_body) do
     active_tab = Enum.find(Map.get(app, :tabs, []), &(&1.id == Map.get(app, :active_tab_id)))
     content = (active_tab && Map.get(active_tab, :content)) || ""
     line_count = content |> String.split("\n") |> length()
-    digits = max(3, String.length(Integer.to_string(line_count)))
+    digits = Strata.UI.Components.SQLEditor.gutter_digits(line_count)
     editor_body.x + 1 + digits + 3
   end
 
@@ -361,9 +407,9 @@ defmodule Strata.UI.Selection do
 
   defp trim_empty_edge_lines(lines) do
     lines
-    |> Enum.drop_while(&(&1 == ""))
+    |> Enum.drop_while(&(&1.text == ""))
     |> Enum.reverse()
-    |> Enum.drop_while(&(&1 == ""))
+    |> Enum.drop_while(&(&1.text == ""))
     |> Enum.reverse()
   end
 end

@@ -21,7 +21,7 @@ defmodule Strata.DataStoreTest do
     columns = ["id", "name"]
     rows = [["1", "Alice"], ["2", "Bob"], ["3", "Charlie"]]
 
-    DataStore.store_result("tab2", columns, rows)
+    DataStore.put_result_set("tab2", columns, rows)
     assert {^columns, [["1", "Alice"], ["2", "Bob"]], 3, 3} = DataStore.get_page("tab2", 1, 2)
 
     assert {[], [], 0, 0} = DataStore.get_page("non_existent_tab", 1, 10)

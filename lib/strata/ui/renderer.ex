@@ -29,29 +29,28 @@ defmodule Strata.UI.Renderer do
 
     sidebar_width = max(24, min(40, round(width * 0.25)))
     right_width = max(1, width - sidebar_width)
+    tab_bar_height = 1
+    right_body_height = max(1, content_height - tab_bar_height)
+    right_body_y = tab_bar_height
 
     {editor_height, datagrid_height, datagrid_y} =
       case active_view do
         :table_view ->
-          {0, content_height, 0}
-
-        :query_view ->
-          eh = round(content_height * 0.40)
-          dh = max(1, content_height - eh)
-          {eh, dh, eh}
+          {0, right_body_height, right_body_y}
 
         _ ->
-          eh = round(content_height * 0.40)
-          dh = max(1, content_height - eh)
-          {eh, dh, eh}
+          eh = max(3, round(right_body_height * 0.40))
+          dh = max(1, right_body_height - eh)
+          {eh, dh, right_body_y + eh}
       end
 
     %{
       header: %{x: 0, y: 0, width: width, height: 0},
       sidebar: %{x: 0, y: 0, width: sidebar_width, height: content_height},
+      tabs: %{x: sidebar_width, y: 0, width: right_width, height: tab_bar_height},
       editor: %{
         x: sidebar_width,
-        y: 0,
+        y: right_body_y,
         width: right_width,
         height: editor_height
       },
@@ -87,15 +86,25 @@ defmodule Strata.UI.Renderer do
   Renders the complete UI component tree for current app state.
   """
   def render(app) do
+    render_scene(app).widgets
+  end
+
+  @doc """
+  Renders the complete UI component tree alongside per-pane soft-wrap metadata
+  (`wrapped_regions`) so `Strata.UI.Selection` preserves line-break provenance
+  without duplicating formatting or wrapping logic.
+  """
+  def render_scene(app) do
     areas = layout(app.window_size, Map.get(app, :active_view, :query_view))
 
     header_item = render_header(app, areas.header)
     sidebar_item = render_sidebar(app, areas.sidebar)
-    editor_item = render_editor(app, areas.editor)
-    datagrid_item = render_datagrid(app, areas.datagrid)
+    tabs_item = render_tab_bar(app, areas.tabs)
+    {editor_item, editor_regions} = render_editor_with_meta(app, areas.editor)
+    {datagrid_item, datagrid_regions} = render_datagrid_with_meta(app, areas.datagrid)
     footer_item = render_footer(app, areas.footer)
 
-    modal_items = render_modal(app, app.window_size)
+    {modal_items, modal_regions} = render_modal_with_meta(app, app.window_size)
 
     selection_items =
       case {Map.get(app, :text_selection), Map.get(app, :selection_screen),
@@ -107,10 +116,210 @@ defmodule Strata.UI.Renderer do
           []
       end
 
-    List.flatten(
-      [header_item, sidebar_item, editor_item, datagrid_item, footer_item] ++
-        modal_items ++ selection_items
-    )
+    widgets =
+      List.flatten(
+        [header_item, sidebar_item, tabs_item, editor_item, datagrid_item, footer_item] ++
+          modal_items ++ selection_items
+      )
+
+    %{
+      widgets: widgets,
+      wrapped_regions: editor_regions ++ datagrid_regions ++ modal_regions
+    }
+  end
+
+  defp tab_label_parts(tab, active_id) do
+    kind = Map.get(tab, :kind, :query)
+    active? = tab.id == active_id
+
+    # Single-column BMP symbols guarantee display width == String.length for exact click hit-testing
+    icon = if kind == :table, do: "⊞", else: "⌘"
+    prefix = if active?, do: " * ", else: " "
+    raw_name = to_string(Map.get(tab, :name, "Tab"))
+
+    short_name =
+      if String.length(raw_name) > 20,
+        do: String.slice(raw_name, 0, 17) <> "...",
+        else: raw_name
+
+    main = "#{prefix}#{icon} #{short_name} "
+    close = "[×] "
+    {main, close, String.length(main) + String.length(close)}
+  end
+
+  @doc """
+  Computes exact screen rects for each open tab, its `[×]` close button, and the
+  `[+ SQL]` action button inside `tabs_area`. Shared between `render_tab_bar/2`
+  and mouse click handling in `Strata.UI.App`.
+  """
+  @spec tab_bar_layout(map(), rect()) :: %{
+          tabs: [map()],
+          new_sql_rect: rect() | nil
+        }
+  def tab_bar_layout(app, tabs_area) do
+    tabs = Map.get(app, :tabs, [])
+    active_id = Map.get(app, :active_tab_id)
+    new_btn_label = " [+ SQL] "
+    new_btn_w = String.length(new_btn_label)
+    max_tabs_right = tabs_area.x + tabs_area.width - new_btn_w - 1
+
+    visible_tabs = window_tabs_to_fit(tabs, active_id, max(14, max_tabs_right - tabs_area.x))
+
+    {rev_items, cursor_x} =
+      Enum.reduce(visible_tabs, {[], tabs_area.x}, fn tab, {acc, x_acc} ->
+        kind = Map.get(tab, :kind, :query)
+        active? = tab.id == active_id
+        {main, close, w} = tab_label_parts(tab, active_id)
+        label = main <> close
+
+        if x_acc + w <= max_tabs_right or acc == [] do
+          clamped_w = min(w, max(1, tabs_area.x + tabs_area.width - x_acc))
+          rect = %{x: x_acc, y: tabs_area.y, width: clamped_w, height: 1}
+          close_len = String.length(close)
+
+          close_rect =
+            if clamped_w >= close_len do
+              %{x: x_acc + clamped_w - close_len, y: tabs_area.y, width: 3, height: 1}
+            else
+              %{x: x_acc + max(0, clamped_w - 1), y: tabs_area.y, width: 1, height: 1}
+            end
+
+          item = %{
+            id: tab.id,
+            kind: kind,
+            active?: active?,
+            label: String.slice(label, 0, clamped_w),
+            rect: rect,
+            close_rect: close_rect
+          }
+
+          {[item | acc], x_acc + clamped_w + 1}
+        else
+          {acc, x_acc}
+        end
+      end)
+
+    new_sql_rect =
+      if cursor_x + new_btn_w <= tabs_area.x + tabs_area.width do
+        %{x: cursor_x, y: tabs_area.y, width: new_btn_w, height: 1}
+      else
+        nil
+      end
+
+    %{tabs: Enum.reverse(rev_items), new_sql_rect: new_sql_rect}
+  end
+
+  defp window_tabs_to_fit([], _active_id, _avail_w), do: []
+
+  defp window_tabs_to_fit(tabs, active_id, avail_w) do
+    active_idx = Enum.find_index(tabs, &(&1.id == active_id)) || 0
+
+    widths =
+      Enum.map(tabs, fn tab ->
+        {_main, _close, w} = tab_label_parts(tab, active_id)
+        w
+      end)
+
+    total = Enum.sum(widths) + max(0, length(tabs) - 1)
+
+    if total <= avail_w do
+      tabs
+    else
+      # Slide start index forward until active tab fits within avail_w
+      Stream.iterate(0, &(&1 + 1))
+      |> Enum.find_value(Enum.slice(tabs, active_idx, 1), fn start_idx ->
+        slice = Enum.slice(tabs, start_idx..active_idx)
+        slice_w = Enum.sum(Enum.slice(widths, start_idx..active_idx)) + max(0, length(slice) - 1)
+
+        if slice_w <= avail_w or start_idx >= active_idx do
+          # Also include trailing tabs if space remains
+          {rev_out, _} =
+            tabs
+            |> Enum.drop(start_idx)
+            |> Enum.reduce({[], 0}, fn t, {acc, used} ->
+              w = Enum.at(widths, Enum.find_index(tabs, &(&1.id == t.id)) || 0, 12)
+              sep = if acc == [], do: 0, else: 1
+
+              if used + sep + w <= avail_w or acc == [] do
+                {[t | acc], used + sep + w}
+              else
+                {acc, used}
+              end
+            end)
+
+          Enum.reverse(rev_out)
+        end
+      end)
+    end
+  end
+
+  defp render_tab_bar(app, tabs_area) do
+    alias ExRatatui.Style
+    alias ExRatatui.Text.{Line, Span}
+
+    tb = tab_bar_layout(app, tabs_area)
+
+    bg_widget =
+      {%ExRatatui.Widgets.Paragraph{
+         text: "",
+         style: %Style{fg: :gray, bg: :black}
+       }, to_rect(tabs_area)}
+
+    tab_widgets =
+      Enum.flat_map(tb.tabs, fn item ->
+        style =
+          cond do
+            item.active? and item.kind == :table ->
+              %Style{fg: :black, bg: :cyan, modifiers: [:bold]}
+
+            item.active? ->
+              %Style{fg: :black, bg: :yellow, modifiers: [:bold]}
+
+            true ->
+              %Style{fg: :white, bg: :dark_gray}
+          end
+
+        close_style =
+          if item.active?,
+            do: %Style{fg: :red, bg: style.bg, modifiers: [:bold]},
+            else: %Style{fg: :light_red, bg: :dark_gray, modifiers: [:bold]}
+
+        label_len = String.length(item.label)
+        close_chars = min(4, label_len)
+
+        main_part =
+          if label_len > close_chars,
+            do: String.slice(item.label, 0, label_len - close_chars),
+            else: ""
+
+        close_part = String.slice(item.label, label_len - close_chars, close_chars)
+
+        line =
+          Line.new([
+            Span.new(main_part, style: style),
+            Span.new(close_part, style: close_style)
+          ])
+
+        [
+          {%ExRatatui.Widgets.Paragraph{text: [line], style: style}, to_rect(item.rect)}
+        ]
+      end)
+
+    new_btn_widgets =
+      case tb.new_sql_rect do
+        %{} = r ->
+          [
+            {%ExRatatui.Widgets.Paragraph{
+               text: " [+ SQL] ",
+               style: %Style{fg: :green, modifiers: [:bold]}
+             }, to_rect(r)}
+          ]
+
+        nil ->
+          []
+      end
+
+    [bg_widget] ++ tab_widgets ++ new_btn_widgets
   end
 
   defp to_rect(%{x: x, y: y, width: w, height: h}) do
@@ -198,42 +407,18 @@ defmodule Strata.UI.Renderer do
     [{list_widget, rect}, {scrollbar_widget, rect}]
   end
 
-  defp render_editor(app, area) do
+  defp render_editor_with_meta(app, area) do
     if area.height > 0 do
       editor_chunk = SQLEditor.render(app, area)
       fg = if app.focus == :editor, do: :yellow, else: :cyan
 
-      tab_height = 1
-      body_height = max(1, area.height - tab_height)
+      body_rect = to_rect(area)
 
-      tabs_rect = %ExRatatui.Layout.Rect{
-        x: area.x,
-        y: area.y,
-        width: area.width,
-        height: tab_height
-      }
-
-      body_rect = %ExRatatui.Layout.Rect{
-        x: area.x,
-        y: area.y + tab_height,
-        width: area.width,
-        height: body_height
-      }
-
-      titles = Map.get(editor_chunk, :tab_titles, ["Query 1"])
-      selected_idx = Map.get(editor_chunk, :active_index, 0)
-
-      tabs_widget = %ExRatatui.Widgets.Tabs{
-        titles: if(titles != [], do: titles, else: ["Query 1"]),
-        selected: selected_idx,
-        style: %ExRatatui.Style{fg: :white},
-        highlight_style: %ExRatatui.Style{fg: :black, bg: :yellow, modifiers: [:bold]},
-        divider: "│"
-      }
-
-      {c_row, _c_col} = Map.get(editor_chunk, :cursor, {0, 0})
-      viewport_h = max(1, body_height - 2)
-      scroll_top = max(0, c_row - viewport_h + 1)
+      active_tab = Map.get(editor_chunk, :active_tab)
+      viewport_h = max(1, area.height - 2)
+      total_v_lines = length(editor_chunk.lines)
+      max_top = max(0, total_v_lines - viewport_h)
+      scroll_top = SQLEditor.effective_scroll_top(active_tab, area)
 
       visible_lines =
         editor_chunk.lines
@@ -241,9 +426,16 @@ defmodule Strata.UI.Renderer do
         |> Enum.take(viewport_h)
 
       editor_focused? = app.focus == :editor and not Map.get(app, :selection_capture?, false)
-      styled_lines = Enum.map(visible_lines, &build_highlighted_sql_line(&1, editor_focused?))
+      diagnostics = Map.get(editor_chunk, :diagnostics, [])
+      diags_by_row = Enum.group_by(diagnostics, & &1.line)
 
-      editor_title =
+      styled_lines =
+        Enum.map(visible_lines, fn line_info ->
+          row_diags = Map.get(diags_by_row, line_info.logical_row, [])
+          build_highlighted_sql_line(line_info, editor_focused?, row_diags)
+        end)
+
+      base_editor_title =
         case Sidebar.resolve_selection_context(app) do
           {%{name: conn_name} = prof, schema} when is_binary(conn_name) and conn_name != "" ->
             raw_db = to_string(Map.get(prof, :database) || "") |> String.trim()
@@ -268,6 +460,23 @@ defmodule Strata.UI.Renderer do
             " SQL EDITOR "
         end
 
+      editor_title =
+        case diagnostics do
+          [first | _] ->
+            badge = if first.severity == :error, do: "✖", else: "⚠"
+            raw_msg = to_string(first.message)
+
+            msg =
+              if String.length(raw_msg) > 38,
+                do: String.slice(raw_msg, 0, 35) <> "...",
+                else: raw_msg
+
+            "#{String.trim_trailing(base_editor_title)} · #{badge} L#{first.line + 1}: #{msg} "
+
+          [] ->
+            base_editor_title
+        end
+
       paragraph_widget = %ExRatatui.Widgets.Paragraph{
         text: styled_lines,
         block: %ExRatatui.Widgets.Block{
@@ -288,17 +497,7 @@ defmodule Strata.UI.Renderer do
             popup_rect = to_rect(comp_rect)
 
             items =
-              Enum.map(suggs, fn sug ->
-                icon =
-                  case sug.type do
-                    :keyword -> "🔤"
-                    :table -> "📋"
-                    :column -> "🔹"
-                    _ -> "•"
-                  end
-
-                " #{icon} #{sug.label}"
-              end)
+              Enum.map(suggs, &format_completion_item/1)
 
             clear_w = %ExRatatui.Widgets.Clear{}
 
@@ -321,16 +520,36 @@ defmodule Strata.UI.Renderer do
             []
         end
 
-      [{tabs_widget, tabs_rect}, {paragraph_widget, body_rect}] ++ completion_items
+      v_scrollbar =
+        if total_v_lines > viewport_h do
+          [
+            {%ExRatatui.Widgets.Scrollbar{
+               orientation: :vertical_right,
+               content_length: max(1, max_top),
+               position: scroll_top,
+               thumb_symbol: "┃",
+               track_symbol: "│",
+               begin_symbol: "▲",
+               end_symbol: "▼",
+               thumb_style: %ExRatatui.Style{fg: fg, modifiers: [:bold]},
+               track_style: %ExRatatui.Style{fg: :dark_gray}
+             }, body_rect}
+          ]
+        else
+          []
+        end
+
+      regions = wrapped_region_for_rect(area, visible_lines, editor_chunk.gutter_width)
+      {[{paragraph_widget, body_rect}] ++ v_scrollbar ++ completion_items, regions}
     else
       widget = %ExRatatui.Widgets.Paragraph{text: ""}
-      {widget, to_rect(area)}
+      {{widget, to_rect(area)}, []}
     end
   end
 
   @doc """
   Computes the floating SQL Editor autocomplete popup rect when active, or `nil` when hidden.
-  Shared between `render_editor/2` and `Strata.UI.Selection.bounds_for_anchor/2`.
+  Shared between `render_editor_with_meta/2` and `Strata.UI.Selection.bounds_for_anchor/2`.
   """
   @spec editor_completion_rect(map(), rect()) :: rect() | nil
   def editor_completion_rect(app, %{height: h} = area) when h > 0 do
@@ -339,16 +558,23 @@ defmodule Strata.UI.Renderer do
     suggs = Map.get(comp, :suggestions, [])
 
     if comp != %{} and Map.get(comp, :active?, false) and suggs != [] do
-      {c_row, c_col} = Map.get(active_tab, :cursor, {0, 0})
-      body_height = max(1, area.height - 1)
-      viewport_h = max(1, body_height - 2)
-      scroll_top = max(0, c_row - viewport_h + 1)
+      content = Map.get(active_tab, :content, "")
+      cursor = Map.get(active_tab, :cursor, {0, 0})
 
-      popup_width = 24
-      popup_height = min(7, length(suggs) + 2)
+      %{code_width: cw, gutter_width: gw} = SQLEditor.editor_metrics(content, area)
+      %{cursor_v_pos: {v_row, v_col}} = SQLEditor.visual_layout(content, cursor, cw)
+      scroll_top = SQLEditor.effective_scroll_top(active_tab, area)
 
-      px = min(area.x + area.width - popup_width, area.x + c_col + 6)
-      py = min(area.y + area.height - popup_height, area.y + max(0, c_row - scroll_top) + 2)
+      max_item_w =
+        suggs
+        |> Enum.map(&String.length(format_completion_item(&1)))
+        |> Enum.max(fn -> 20 end)
+
+      popup_width = min(48, max(24, min(max_item_w + 5, max(20, area.width - 2))))
+      popup_height = min(8, length(suggs) + 2)
+
+      px = min(area.x + area.width - popup_width, area.x + v_col + gw)
+      py = min(area.y + area.height - popup_height, area.y + max(0, v_row - scroll_top) + 1)
 
       %{
         x: max(area.x, px),
@@ -363,11 +589,42 @@ defmodule Strata.UI.Renderer do
 
   def editor_completion_rect(_app, _area), do: nil
 
-  defp build_highlighted_sql_line(line_info, editor_focused?) do
+  defp format_completion_item(sug) do
+    icon =
+      case sug.type do
+        :keyword -> "K"
+        :table -> "⊞"
+        :column -> "•"
+        _ -> "·"
+      end
+
+    detail = Map.get(sug, :detail)
+
+    if is_binary(detail) and detail != "" and detail not in ["keyword", "table"] do
+      " #{icon} #{sug.label}  [#{detail}]"
+    else
+      " #{icon} #{sug.label}"
+    end
+  end
+
+  defp build_highlighted_sql_line(line_info, editor_focused?, row_diags) do
     alias ExRatatui.Style
     alias ExRatatui.Text.{Line, Span}
 
-    prefix_span = Span.new(line_info.prefix, style: %Style{fg: :dark_gray})
+    prefix_style =
+      cond do
+        Enum.any?(row_diags, &(&1.severity == :error)) ->
+          %Style{fg: :red, modifiers: [:bold]}
+
+        row_diags != [] ->
+          %Style{fg: :yellow, modifiers: [:bold]}
+
+        true ->
+          %Style{fg: :dark_gray}
+      end
+
+    prefix_span = Span.new(line_info.prefix, style: prefix_style)
+    diag_tokens = row_diags |> Enum.map(&Map.get(&1, :token)) |> Enum.reject(&is_nil/1)
 
     token_spans =
       case Map.get(line_info, :tokens, []) do
@@ -376,7 +633,7 @@ defmodule Strata.UI.Renderer do
 
         tokens ->
           Enum.map(tokens, fn %{type: type, text: text} ->
-            style =
+            base_style =
               case type do
                 :keyword -> %Style{fg: :cyan, modifiers: [:bold]}
                 :string -> %Style{fg: :green}
@@ -384,6 +641,17 @@ defmodule Strata.UI.Renderer do
                 :comment -> %Style{fg: :dark_gray}
                 :operator -> %Style{fg: :yellow}
                 _ -> %Style{}
+              end
+
+            style =
+              if diag_tokens != [] and Enum.any?(diag_tokens, &(&1 == text)) do
+                %{
+                  base_style
+                  | fg: :red,
+                    modifiers: Enum.uniq([:underlined | base_style.modifiers])
+                }
+              else
+                base_style
               end
 
             Span.new(text, style: style)
@@ -533,9 +801,10 @@ defmodule Strata.UI.Renderer do
     max_line_w = max(8, i_area.width - 3)
     fmt = Map.get(app, :inspector_format, :auto)
 
-    {value_lines, fmt_badge} =
+    {value_metas, fmt_badge} =
       cached_inspector_value_lines(raw_cell, col_name, r_idx, fmt, max_line_w)
 
+    value_lines = Enum.map(value_metas, & &1.line)
     summary_lines = cached_inspector_summary_lines(grid.columns, row_vals, c_idx, max_line_w)
 
     val_vp = max(1, areas.value_area.height - 2)
@@ -550,6 +819,7 @@ defmodule Strata.UI.Renderer do
       col_idx: c_idx,
       total_cols: max(1, length(grid.columns)),
       value_lines: value_lines,
+      value_line_metas: value_metas,
       summary_lines: summary_lines,
       max_value_scroll: max(0, length(value_lines) - val_vp),
       max_summary_scroll: max(0, length(summary_lines) - sum_vp),
@@ -608,46 +878,58 @@ defmodule Strata.UI.Renderer do
   end
 
   defp cached_inspector_value_lines(raw_cell, col_name, r_idx, fmt, max_line_w) do
-    Strata.UI.Cache.fetch(:strata_inspector_val_cache, {raw_cell, fmt, max_line_w}, 64, fn ->
+    Strata.UI.Cache.fetch(:strata_inspector_val_cache, {:v2, raw_cell, fmt, max_line_w}, 64, fn ->
       compute_inspector_value_lines(raw_cell, col_name, r_idx, fmt, max_line_w)
     end)
   end
 
-  defp compute_inspector_value_lines(raw_cell, col_name, r_idx, fmt, max_line_w) do
+  defp compute_inspector_value_lines(raw_cell, _col_name, _r_idx, fmt, max_line_w) do
     alias ExRatatui.Style
     alias ExRatatui.Text.{Line, Span}
 
-    detail =
-      Strata.UI.Components.CellDetailModal.new(raw_cell, column: col_name, row_index: r_idx + 1)
+    {detected_type, formatted_value} = Strata.Formatter.inspect_cell_value(raw_cell)
 
     cond do
       fmt == :raw ->
-        {Strata.Formatter.wrap_text_lines(inspect(raw_cell, pretty: true), max_line_w), "raw"}
+        {Strata.Formatter.wrap_text_lines_with_meta(inspect(raw_cell, pretty: true), max_line_w),
+         "raw"}
 
       fmt == :text ->
-        {Strata.Formatter.wrap_text_lines(
+        {Strata.Formatter.wrap_text_lines_with_meta(
            Strata.Formatter.format_cell_detail(raw_cell),
            max_line_w
          ), "text"}
 
-      detail.detected_type == :json ->
-        {Strata.Formatter.highlight_json_lines(detail.formatted_value, max_line_w), "JSON"}
+      detected_type == :json ->
+        {Strata.Formatter.highlight_json_lines_with_meta(formatted_value, max_line_w), "JSON"}
 
-      detail.detected_type == nil ->
-        {[Line.new([Span.new("<NULL>", style: %Style{fg: :dark_gray, modifiers: [:bold]})])],
-         "NULL"}
+      detected_type == nil ->
+        {[
+           %{
+             line:
+               Line.new([Span.new("<NULL>", style: %Style{fg: :dark_gray, modifiers: [:bold]})]),
+             continued?: false,
+             text: "<NULL>"
+           }
+         ], "NULL"}
 
-      detail.detected_type == :uuid ->
-        {Strata.Formatter.wrap_text_lines(detail.formatted_value, max_line_w, %Style{fg: :cyan}),
-         "UUID"}
+      detected_type == :uuid ->
+        {Strata.Formatter.wrap_text_lines_with_meta(
+           formatted_value,
+           max_line_w,
+           %Style{fg: :cyan}
+         ), "UUID"}
 
       true ->
-        {Strata.Formatter.wrap_text_lines(detail.formatted_value, max_line_w, %Style{fg: :white}),
-         to_string(detail.detected_type)}
+        {Strata.Formatter.wrap_text_lines_with_meta(
+           formatted_value,
+           max_line_w,
+           %Style{fg: :white}
+         ), to_string(detected_type)}
     end
   end
 
-  defp render_datagrid(app, total_area) do
+  defp render_datagrid_with_meta(app, total_area) do
     %{filter_area: filter_area, grid_area: area, inspector_area: inspector_area} =
       datagrid_areas(total_area, app)
 
@@ -705,7 +987,9 @@ defmodule Strata.UI.Renderer do
             else: "TABLE VIEW#{loading_badge}#{mode_badge}"
 
         :query_view ->
-          "QUERY RESULT GRID (#{row_count_label})#{sort_badge}#{dirty_badge}#{mode_badge}"
+          more_part = if grid.has_more or grid.loading_more, do: " - #{more_status}", else: ""
+
+          "QUERY RESULT GRID (#{row_count_label}#{more_part})#{sort_badge}#{dirty_badge}#{loading_badge}#{mode_badge}"
 
         _ ->
           "RESULT DATA GRID (#{row_count_label})#{sort_badge}#{dirty_badge}#{mode_badge}"
@@ -943,9 +1227,11 @@ defmodule Strata.UI.Renderer do
       )
 
     filter_widgets = render_inline_filter_bar(app, filter_area)
-    inspector_widgets = render_inspector_drawer(app, grid, inspector_area)
+
+    {inspector_widgets, inspector_regions} =
+      render_inspector_drawer_with_meta(app, grid, inspector_area)
+
     dropdown_widgets = render_filter_dropdown(app, total_area)
-    sort_picker_widgets = render_sort_picker(app, total_area)
 
     widgets =
       filter_widgets ++
@@ -955,178 +1241,126 @@ defmodule Strata.UI.Renderer do
         throbber_overlay ++
         inline_overlay ++
         inspector_widgets ++
-        dropdown_widgets ++
-        sort_picker_widgets
+        dropdown_widgets
 
-    case widgets do
-      [single] -> single
-      list -> list
-    end
+    rendered =
+      case widgets do
+        [single] -> single
+        list -> list
+      end
+
+    {rendered, inspector_regions}
   end
 
   @doc """
-  Computes the Sort Column Picker dropdown geometry and items when `sort_picker_open`
-  is active in Browsing mode. Returns `nil` when closed.
-  """
-  @spec sort_picker_data(map(), rect()) :: map() | nil
-  def sort_picker_data(app, total_area) do
-    if Map.get(app, :sort_picker_open, false) do
-      %{grid_area: g_area} = datagrid_areas(total_area, app)
-      grid = Map.get(app, :datagrid_state) || DataGrid.new()
-      search = String.downcase(String.trim(to_string(Map.get(app, :sort_picker_search, ""))))
-
-      col_items =
-        grid.columns
-        |> Enum.with_index()
-        |> Enum.map(fn {col_name, col_idx} ->
-          name_str = to_string(col_name)
-
-          dir_suffix =
-            case grid.sort_by do
-              {^name_str, :asc} -> "  ▲ (ASC)"
-              {^name_str, :desc} -> "  ▼ (DESC)"
-              _ -> ""
-            end
-
-          %{kind: :column, col_idx: col_idx, name: name_str, label: name_str <> dir_suffix}
-        end)
-        |> Enum.filter(fn item ->
-          search == "" or String.contains?(String.downcase(item.name), search)
-        end)
-        |> Enum.sort_by(fn item ->
-          low = String.downcase(item.name)
-          if search != "" and String.starts_with?(low, search), do: 0, else: 1
-        end)
-
-      items =
-        if grid.sort_by != nil and search == "" do
-          col_items ++ [%{kind: :clear, col_idx: nil, name: "", label: "✕ Clear Sort"}]
-        else
-          col_items
-        end
-
-      w = min(34, max(20, g_area.width - 4))
-      x = g_area.x + 2
-      y = min(g_area.y + 2, g_area.y + max(1, g_area.height - 4))
-      max_h = max(4, g_area.y + g_area.height - y)
-      h = min(min(14, max_h), max(3, length(items) + 2))
-      idx = min(max(0, Map.get(app, :sort_picker_idx, 0)), max(0, length(items) - 1))
-
-      %{
-        rect: %{x: x, y: y, width: w, height: h},
-        items: items,
-        selected_index: idx,
-        search: Map.get(app, :sort_picker_search, "")
-      }
-    else
-      nil
-    end
-  end
-
-  defp render_sort_picker(app, total_area) do
-    case sort_picker_data(app, total_area) do
-      nil ->
-        []
-
-      %{rect: rect, items: items, selected_index: idx, search: search} ->
-        dd_rect = to_rect(rect)
-        clear_w = %ExRatatui.Widgets.Clear{}
-
-        title =
-          if search != "", do: " ↕ Sort: #{search}▏ ", else: " ↕ Sort by Column (Enter/Esc) "
-
-        list_items =
-          if items == [] do
-            ["(No matching columns)"]
-          else
-            Enum.map(items, & &1.label)
-          end
-
-        list_w = %ExRatatui.Widgets.List{
-          items: list_items,
-          selected: if(items == [], do: 0, else: idx),
-          highlight_symbol: "▸ ",
-          highlight_style: %ExRatatui.Style{fg: :black, bg: :yellow, modifiers: [:bold]},
-          block: %ExRatatui.Widgets.Block{
-            title: title,
-            borders: [:all],
-            border_type: :rounded,
-            border_style: %ExRatatui.Style{fg: :yellow}
-          }
-        }
-
-        [{clear_w, dd_rect}, {list_w, dd_rect}]
-    end
-  end
-
-  @doc """
-  Computes the floating dropdown geometry and items for the Filter Bar (`:column` or `:op`),
-  returning `nil` when closed. Shared with mouse click handling in `App`.
+  Computes the floating dropdown geometry and items for the Unified Filter & Sort Bar
+  (`:column`, `:op`, or `:sort`), returning `nil` when closed. Shared with mouse click handling in `App`.
   """
   @spec filter_dropdown_data(map(), rect()) :: map() | nil
   def filter_dropdown_data(app, total_area) do
     kind = Map.get(app, :filter_dropdown)
     filter_open? = Map.get(app, :filter_bar_open, false)
-    mode = Map.get(app, :filter_bar_mode, :builder)
 
-    if kind in [:column, :op] and filter_open? and mode == :builder do
+    if kind in [:column, :op, :sort] and filter_open? do
       %{filter_area: f_area} = datagrid_areas(total_area, app)
 
       if f_area do
         rects = filter_bar_rects(f_area, app)
-        anchor = if kind == :column, do: rects.col_rect, else: rects.op_rect
 
-        if anchor do
-          grid = Map.get(app, :datagrid_state) || DataGrid.new()
+        anchor =
+          case kind do
+            :column -> rects.col_rect
+            :op -> rects.op_rect
+            :sort -> rects.sort_rect
+          end
 
-          search =
-            String.downcase(String.trim(to_string(Map.get(app, :filter_dropdown_search, ""))))
+        grid = Map.get(app, :datagrid_state) || DataGrid.new()
 
-          items =
-            case kind do
-              :column ->
-                cols = ["* All" | grid.columns || []]
+        search =
+          String.downcase(String.trim(to_string(Map.get(app, :filter_dropdown_search, ""))))
 
-                cols
-                |> Enum.map(fn c ->
-                  val = to_string(c)
-                  lbl = if c == "* All", do: "* All (every column)", else: val
-                  %{value: val, label: lbl}
+        items =
+          case kind do
+            :column ->
+              cols = ["* All" | grid.columns || []]
+
+              cols
+              |> Enum.map(fn c ->
+                val = to_string(c)
+                lbl = if c == "* All", do: "* All (every column)", else: val
+                %{value: val, label: lbl}
+              end)
+              |> Enum.filter(fn item ->
+                search == "" or String.contains?(String.downcase(item.value), search)
+              end)
+              |> Enum.sort_by(fn item ->
+                low = String.downcase(item.value)
+                if search != "" and String.starts_with?(low, search), do: 0, else: 1
+              end)
+
+            :op ->
+              Enum.map(Strata.QueryBuilder.filter_operators(), fn op ->
+                %{value: op, label: op_dropdown_label(op)}
+              end)
+
+            :sort ->
+              col_items =
+                (grid.columns || [])
+                |> Enum.with_index()
+                |> Enum.map(fn {col_name, col_idx} ->
+                  name_str = to_string(col_name)
+
+                  dir_suffix =
+                    case grid.sort_by do
+                      {^name_str, :asc} -> "  ▲ (ASC)"
+                      {^name_str, :desc} -> "  ▼ (DESC)"
+                      _ -> ""
+                    end
+
+                  %{
+                    kind: :column,
+                    col_idx: col_idx,
+                    name: name_str,
+                    label: name_str <> dir_suffix
+                  }
                 end)
                 |> Enum.filter(fn item ->
-                  search == "" or String.contains?(String.downcase(item.value), search)
+                  search == "" or String.contains?(String.downcase(item.name), search)
                 end)
                 |> Enum.sort_by(fn item ->
-                  low = String.downcase(item.value)
+                  low = String.downcase(item.name)
                   if search != "" and String.starts_with?(low, search), do: 0, else: 1
                 end)
 
-              :op ->
-                Enum.map(Strata.QueryBuilder.filter_operators(), fn op ->
-                  %{value: op, label: op_dropdown_label(op)}
-                end)
-            end
+              if grid.sort_by != nil and search == "" do
+                col_items ++ [%{kind: :clear, col_idx: nil, name: "", label: "✕ Clear Sort"}]
+              else
+                col_items
+              end
+          end
 
-          box_w = if kind == :column, do: 30, else: 26
-          max_w = max(18, total_area.x + total_area.width - anchor.x - 1)
-          w = min(box_w, max_w)
-          x = min(anchor.x, max(total_area.x, total_area.x + total_area.width - w - 1))
-          y = f_area.y + 3
-          max_h = max(4, total_area.y + total_area.height - y)
-          h = min(min(12, max_h), max(3, length(items) + 2))
+        box_w =
+          case kind do
+            :op -> 26
+            _ -> 32
+          end
 
-          idx = min(max(0, Map.get(app, :filter_dropdown_idx, 0)), max(0, length(items) - 1))
+        max_w = max(18, total_area.width - 2)
+        w = min(box_w, max_w)
+        x = min(anchor.x, max(total_area.x, total_area.x + total_area.width - w - 1))
+        y = f_area.y + 3
+        max_h = max(4, total_area.y + total_area.height - y)
+        h = min(min(13, max_h), max(3, length(items) + 2))
 
-          %{
-            kind: kind,
-            rect: %{x: x, y: y, width: w, height: h},
-            items: items,
-            selected_index: idx,
-            search: Map.get(app, :filter_dropdown_search, "")
-          }
-        else
-          nil
-        end
+        idx = min(max(0, Map.get(app, :filter_dropdown_idx, 0)), max(0, length(items) - 1))
+
+        %{
+          kind: kind,
+          rect: %{x: x, y: y, width: w, height: h},
+          items: items,
+          selected_index: idx,
+          search: Map.get(app, :filter_dropdown_search, "")
+        }
       else
         nil
       end
@@ -1161,6 +1395,8 @@ defmodule Strata.UI.Renderer do
             :column when search != "" -> " Column: #{search}▏ "
             :column -> " Select Column (type to search) "
             :op -> " Select Operator "
+            :sort when search != "" -> " ↕ Sort: #{search}▏ "
+            :sort -> " ↕ Sort by Column (Enter/Esc) "
           end
 
         list_items =
@@ -1187,83 +1423,85 @@ defmodule Strata.UI.Renderer do
     end
   end
 
+  defp sort_pill_text(app) do
+    grid = Map.get(app, :datagrid_state)
+
+    case grid && Map.get(grid, :sort_by) do
+      {col, dir} ->
+        arrow = if dir == :asc, do: "▲", else: "▼"
+        short_col = truncate_label(to_string(col), 12)
+        " ↕ #{short_col} #{arrow} ▾ "
+
+      _ ->
+        " ↕ Sort ▾ "
+    end
+  end
+
+  defp truncate_label(str, max_len) do
+    if String.length(str) > max_len do
+      String.slice(str, 0, max(1, max_len - 1)) <> "…"
+    else
+      str
+    end
+  end
+
   @doc """
-  Computes sub-widget rectangles inside the inline Filter Bar for both rendering and mouse clicks.
+  Computes sub-widget rectangles inside the Unified Filter & Sort Bar for both rendering and mouse clicks.
   """
   @spec filter_bar_rects(rect(), map()) :: map()
   def filter_bar_rects(f_area, app) do
     inner_x = f_area.x + 1
     inner_y = f_area.y + 1
-    mode = Map.get(app, :filter_bar_mode, :builder)
-    mode_label = if mode == :raw, do: "[Builder]", else: "[SQL]"
-    mode_w = String.length(mode_label)
     clear_w = 3
     run_w = 5
 
     right_edge = f_area.x + f_area.width - 1
-    mode_x = max(inner_x + 14, right_edge - mode_w)
-    clear_x = max(inner_x + 10, mode_x - 1 - clear_w)
-    run_x = max(inner_x + 4, clear_x - 1 - run_w)
+    clear_x = max(inner_x + 12, right_edge - clear_w)
+    run_x = max(inner_x + 6, clear_x - 1 - run_w)
 
-    mode_rect = %{x: mode_x, y: inner_y, width: mode_w, height: 1}
+    sort_text = sort_pill_text(app)
+    sort_w = min(max(10, div(f_area.width, 4)), max(10, String.length(sort_text)))
+    sort_x = max(inner_x + 6, run_x - 1 - sort_w)
+
     clear_rect = %{x: clear_x, y: inner_y, width: clear_w, height: 1}
     run_rect = %{x: run_x, y: inner_y, width: run_w, height: 1}
+    sort_rect = %{x: sort_x, y: inner_y, width: sort_w, height: 1}
 
-    avail = max(6, run_x - inner_x - 1)
+    avail = max(6, sort_x - inner_x - 1)
+    col_str = Map.get(app, :filter_bar_col, "* All") || "* All"
+    op = Map.get(app, :filter_bar_op, :contains) || :contains
+    op_label = Strata.QueryBuilder.operator_label(op)
 
-    if mode == :raw do
-      val_rect = %{x: inner_x, y: inner_y, width: avail, height: 1}
+    col_text = " #{col_str} ▾ "
+    op_text = " #{op_label} ▾ "
 
-      %{
-        run_rect: run_rect,
-        clear_rect: clear_rect,
-        mode_rect: mode_rect,
-        val_rect: val_rect,
-        col_rect: nil,
-        op_rect: nil
-      }
-    else
-      col_str = Map.get(app, :filter_bar_col, "* All") || "* All"
-      op = Map.get(app, :filter_bar_op, :contains) || :contains
-      op_label = Strata.QueryBuilder.operator_label(op)
+    col_w = min(max(10, div(avail, 3)), max(9, String.length(col_text)))
+    op_w = min(max(8, div(avail, 4) + 2), max(6, String.length(op_text)))
+    val_x = inner_x + col_w + 1 + op_w + 1
+    val_w = max(4, sort_x - val_x - 1)
 
-      col_text = " #{col_str} ▾ "
-      op_text = " #{op_label} ▾ "
-
-      col_w = min(max(10, div(avail, 3)), max(9, String.length(col_text)))
-      op_w = min(max(8, div(avail, 4) + 2), max(6, String.length(op_text)))
-      val_x = inner_x + col_w + 1 + op_w + 1
-      val_w = max(4, run_x - val_x - 1)
-
-      %{
-        col_rect: %{x: inner_x, y: inner_y, width: col_w, height: 1},
-        op_rect: %{x: inner_x + col_w + 1, y: inner_y, width: op_w, height: 1},
-        val_rect: %{x: val_x, y: inner_y, width: val_w, height: 1},
-        run_rect: run_rect,
-        clear_rect: clear_rect,
-        mode_rect: mode_rect
-      }
-    end
+    %{
+      col_rect: %{x: inner_x, y: inner_y, width: col_w, height: 1},
+      op_rect: %{x: inner_x + col_w + 1, y: inner_y, width: op_w, height: 1},
+      val_rect: %{x: val_x, y: inner_y, width: val_w, height: 1},
+      sort_rect: sort_rect,
+      run_rect: run_rect,
+      clear_rect: clear_rect
+    }
   end
 
   defp render_inline_filter_bar(_app, nil), do: []
 
   defp render_inline_filter_bar(app, f_area) do
     focused? = Map.get(app, :filter_bar_focused, false)
-    mode = Map.get(app, :filter_bar_mode, :builder)
     focus_part = Map.get(app, :filter_bar_focus_part, :value)
     border_fg = if focused?, do: :yellow, else: :cyan
 
     title =
-      cond do
-        not focused? ->
-          " 🔍 Active Filter ([f] Edit · [Ctrl+L] Reset · [Esc] Hide) "
-
-        mode == :raw ->
-          " 🔍 Raw SQL WHERE (Enter Run · Ctrl+V Paste · Ctrl+R Builder · Ctrl+L Reset) "
-
-        true ->
-          " 🔍 Smart Filter (Enter/[Run] Apply · ↑ History · Tab Col/Op/Val · Ctrl+R SQL) "
+      if focused? do
+        " 🔍 Filter & Sort (Enter/[Run] Apply · ↑ History · Tab Col/Op/Sort · Ctrl+G SQL Tab · Ctrl+L Reset) "
+      else
+        " 🔍 Active Filter & Sort ([f] Edit · [o] Sort · [Ctrl+G] SQL Tab · [Ctrl+L] Reset · [Esc] Hide) "
       end
 
     f_rect = to_rect(f_area)
@@ -1277,9 +1515,21 @@ defmodule Strata.UI.Renderer do
 
     rects = filter_bar_rects(f_area, app)
 
-    mode_label = if mode == :raw, do: "[Builder]", else: "[SQL]"
+    sort_style =
+      cond do
+        focused? and focus_part == :sort ->
+          %ExRatatui.Style{fg: :black, bg: :yellow, modifiers: [:bold]}
+
+        get_in(app, [Access.key(:datagrid_state), Access.key(:sort_by)]) != nil ->
+          %ExRatatui.Style{fg: :black, bg: :cyan, modifiers: [:bold]}
+
+        true ->
+          %ExRatatui.Style{fg: :white, bg: :dark_gray, modifiers: [:bold]}
+      end
 
     action_widgets = [
+      {%ExRatatui.Widgets.Paragraph{text: sort_pill_text(app), style: sort_style},
+       to_rect(rects.sort_rect)},
       {%ExRatatui.Widgets.Paragraph{
          text: "[Run]",
          style: %ExRatatui.Style{fg: :black, bg: :green, modifiers: [:bold]}
@@ -1287,49 +1537,38 @@ defmodule Strata.UI.Renderer do
       {%ExRatatui.Widgets.Paragraph{
          text: "[×]",
          style: %ExRatatui.Style{fg: :white, bg: :red, modifiers: [:bold]}
-       }, to_rect(rects.clear_rect)},
-      {%ExRatatui.Widgets.Paragraph{
-         text: mode_label,
-         style: %ExRatatui.Style{fg: :cyan, modifiers: [:bold]}
-       }, to_rect(rects.mode_rect)}
+       }, to_rect(rects.clear_rect)}
     ]
 
-    value_widgets = render_filter_value_widget(app, rects.val_rect, focused?, mode, focus_part)
+    value_widgets = render_filter_value_widget(app, rects.val_rect, focused?, focus_part)
 
-    builder_widgets =
-      case {mode, rects} do
-        {:builder, %{col_rect: %{} = col_rect, op_rect: %{} = op_rect}} ->
-          col_str = Map.get(app, :filter_bar_col, "* All") || "* All"
-          op = Map.get(app, :filter_bar_op, :contains) || :contains
-          op_label = Strata.QueryBuilder.operator_label(op)
+    col_str = Map.get(app, :filter_bar_col, "* All") || "* All"
+    op = Map.get(app, :filter_bar_op, :contains) || :contains
+    op_label = Strata.QueryBuilder.operator_label(op)
 
-          col_style =
-            if focused? and focus_part == :column,
-              do: %ExRatatui.Style{fg: :black, bg: :yellow, modifiers: [:bold]},
-              else: %ExRatatui.Style{fg: :white, bg: :dark_gray, modifiers: [:bold]}
+    col_style =
+      if focused? and focus_part == :column,
+        do: %ExRatatui.Style{fg: :black, bg: :yellow, modifiers: [:bold]},
+        else: %ExRatatui.Style{fg: :white, bg: :dark_gray, modifiers: [:bold]}
 
-          op_style =
-            if focused? and focus_part == :op,
-              do: %ExRatatui.Style{fg: :black, bg: :yellow, modifiers: [:bold]},
-              else: %ExRatatui.Style{fg: :yellow, bg: :dark_gray, modifiers: [:bold]}
+    op_style =
+      if focused? and focus_part == :op,
+        do: %ExRatatui.Style{fg: :black, bg: :yellow, modifiers: [:bold]},
+        else: %ExRatatui.Style{fg: :yellow, bg: :dark_gray, modifiers: [:bold]}
 
-          [
-            {%ExRatatui.Widgets.Paragraph{text: " #{col_str} ▾ ", style: col_style},
-             to_rect(col_rect)},
-            {%ExRatatui.Widgets.Paragraph{text: " #{op_label} ▾ ", style: op_style},
-             to_rect(op_rect)}
-          ]
+    left_widgets = [
+      {%ExRatatui.Widgets.Paragraph{text: " #{col_str} ▾ ", style: col_style},
+       to_rect(rects.col_rect)},
+      {%ExRatatui.Widgets.Paragraph{text: " #{op_label} ▾ ", style: op_style},
+       to_rect(rects.op_rect)}
+    ]
 
-        _ ->
-          []
-      end
-
-    [{outer_block, f_rect}] ++ builder_widgets ++ value_widgets ++ action_widgets
+    [{outer_block, f_rect}] ++ left_widgets ++ value_widgets ++ action_widgets
   end
 
-  defp render_filter_value_widget(app, v_rect, focused?, mode, focus_part) do
+  defp render_filter_value_widget(app, v_rect, focused?, focus_part) do
     op = Map.get(app, :filter_bar_op, :contains)
-    no_val_needed? = mode == :builder and op in [:is_null, :is_not_null]
+    no_val_needed? = op in [:is_null, :is_not_null]
     rect = to_rect(v_rect)
 
     cond do
@@ -1341,8 +1580,7 @@ defmodule Strata.UI.Renderer do
            }, rect}
         ]
 
-      focused? and (mode == :raw or focus_part == :value) and
-          not is_nil(Map.get(app, :filter_bar_ref)) ->
+      focused? and focus_part == :value and not is_nil(Map.get(app, :filter_bar_ref)) ->
         [
           {%ExRatatui.Widgets.TextInput{
              state: app.filter_bar_ref,
@@ -1353,13 +1591,7 @@ defmodule Strata.UI.Renderer do
 
       true ->
         raw_txt = Map.get(app, :filter_bar_text, "")
-
-        placeholder =
-          if mode == :raw,
-            do: "e.g. status = 'active' AND id > 10",
-            else: "type value to filter..."
-
-        txt = if raw_txt == "", do: placeholder, else: raw_txt
+        txt = if raw_txt == "", do: "type value to filter...", else: raw_txt
 
         style =
           if raw_txt == "",
@@ -1370,15 +1602,19 @@ defmodule Strata.UI.Renderer do
     end
   end
 
-  defp render_inspector_drawer(_app, _grid, nil), do: []
+  defp render_inspector_drawer_with_meta(_app, _grid, nil), do: {[], []}
 
-  defp render_inspector_drawer(app, grid, i_area) do
+  defp render_inspector_drawer_with_meta(app, grid, i_area) do
     data = inspector_data(app, grid, i_area)
     v_area = data.areas.value_area
     s_area = data.areas.summary_area
 
     v_scroll = min(Map.get(app, :inspector_value_scroll, 0) || 0, data.max_value_scroll)
-    v_visible = data.value_lines |> Enum.drop(v_scroll) |> Enum.take(data.val_viewport_h)
+
+    v_visible_metas =
+      data.value_line_metas |> Enum.drop(v_scroll) |> Enum.take(data.val_viewport_h)
+
+    v_visible = Enum.map(v_visible_metas, & &1.line)
 
     v_scroll_hint =
       if data.max_value_scroll > 0,
@@ -1457,7 +1693,8 @@ defmodule Strata.UI.Renderer do
         []
       end
 
-    [{value_widget, v_rect}] ++ value_scrollbar ++ summary_widgets
+    regions = wrapped_region_for_rect(v_area, v_visible_metas)
+    {[{value_widget, v_rect}] ++ value_scrollbar ++ summary_widgets, regions}
   end
 
   defp format_staged_cell_span(val, col_w, kind, show_marker?) do
@@ -1617,20 +1854,14 @@ defmodule Strata.UI.Renderer do
         match?(%Strata.UI.Components.ActionsModal{}, top) ->
           {64, max(10, min(22, length(top.items) + 4))}
 
-        match?(%Strata.UI.Components.FilterExportModal{}, top) or
-          match?(%{type: :filter_modal}, top) or match?(%{type: :export_modal}, top) ->
+        match?(%Strata.UI.Components.ExportModal{}, top) ->
           {74, 18}
 
-        match?(%Strata.UI.Components.ConnectionModal{}, top) or
-            match?(%{type: :connection_modal}, top) ->
+        match?(%Strata.UI.Components.ConnectionModal{}, top) ->
           {72, 22}
 
-        match?(%Strata.UI.Components.SSHModal{}, top) or match?(%{type: :ssh_modal}, top) ->
+        match?(%Strata.UI.Components.SSHModal{}, top) ->
           {72, 22}
-
-        match?(%Strata.UI.Components.CellDetailModal{}, top) or
-            match?(%{type: :cell_detail_modal}, top) ->
-          {76, 22}
 
         match?(%{type: :confirm_delete_connection}, top) ->
           {54, 9}
@@ -1644,7 +1875,7 @@ defmodule Strata.UI.Renderer do
 
   def modal_area_for(_app, window_size), do: modal_layout(window_size, {64, 18})
 
-  defp render_modal(app, window_size) do
+  defp render_modal_with_meta(app, window_size) do
     case app.modals do
       [%Strata.UI.Components.ActionsModal{} = actions_modal | _] ->
         modal_area = modal_area_for(app, window_size)
@@ -1669,7 +1900,7 @@ defmodule Strata.UI.Renderer do
           }
         }
 
-        [{clear_widget, m_rect}, {list_widget, m_rect}]
+        {[{clear_widget, m_rect}, {list_widget, m_rect}], []}
 
       [top | _] ->
         modal_area = modal_area_for(app, window_size)
@@ -1680,47 +1911,11 @@ defmodule Strata.UI.Renderer do
             %Strata.UI.Components.ConnectionModal{} = conn_modal ->
               Strata.UI.Components.ConnectionModal.render(conn_modal, modal_area)
 
-            %{type: :connection_modal} ->
-              Strata.UI.Components.ConnectionModal.render(
-                Strata.UI.Components.ConnectionModal.new(),
-                modal_area
-              )
-
-            %Strata.UI.Components.CellDetailModal{} = cell_modal ->
-              Strata.UI.Components.CellDetailModal.render(cell_modal, modal_area)
-
-            %{type: :cell_detail_modal} = m ->
-              val = Map.get(m, :content, "")
-              opts = [column: Map.get(m, :column), row_index: Map.get(m, :row_index)]
-
-              Strata.UI.Components.CellDetailModal.render(
-                Strata.UI.Components.CellDetailModal.new(val, opts),
-                modal_area
-              )
-
-            %Strata.UI.Components.FilterExportModal{} = fe_modal ->
-              Strata.UI.Components.FilterExportModal.render(fe_modal, modal_area)
-
-            %{type: :filter_modal} ->
-              Strata.UI.Components.FilterExportModal.render(
-                Strata.UI.Components.FilterExportModal.new(:filter),
-                modal_area
-              )
-
-            %{type: :export_modal} ->
-              Strata.UI.Components.FilterExportModal.render(
-                Strata.UI.Components.FilterExportModal.new(:export),
-                modal_area
-              )
+            %Strata.UI.Components.ExportModal{} = export_modal ->
+              Strata.UI.Components.ExportModal.render(export_modal, modal_area)
 
             %Strata.UI.Components.SSHModal{} = ssh_modal ->
               Strata.UI.Components.SSHModal.render(ssh_modal, modal_area)
-
-            %{type: :ssh_modal} ->
-              Strata.UI.Components.SSHModal.render(
-                Strata.UI.Components.SSHModal.new(),
-                modal_area
-              )
 
             map when is_map(map) ->
               map
@@ -1736,50 +1931,55 @@ defmodule Strata.UI.Renderer do
         title = if is_binary(raw_title) and raw_title != "", do: raw_title, else: "Modal"
         focused = Map.get(rendered_info, :focused_field)
 
-        content_lines =
+        {content_lines, modal_regions} =
           case Map.get(rendered_info, :fields) do
             fields when is_list(fields) ->
-              Enum.map(fields, fn f ->
-                focused? = f.key == focused
-                prefix = if focused?, do: " ▸ ", else: "   "
+              lines =
+                Enum.map(fields, fn f ->
+                  focused? = f.key == focused
+                  prefix = if focused?, do: " ▸ ", else: "   "
 
-                cond do
-                  Map.has_key?(f, :value) ->
-                    label = String.pad_trailing(to_string(f.label), 17)
-                    val = to_string(f.value || "")
+                  cond do
+                    Map.has_key?(f, :value) ->
+                      label = String.pad_trailing(to_string(f.label), 17)
+                      val = to_string(f.value || "")
 
-                    if focused? do
+                      if focused? do
+                        Line.new([
+                          Span.new(prefix <> label <> ": ",
+                            style: %Style{fg: :yellow, modifiers: [:bold]}
+                          ),
+                          Span.new(val,
+                            style: %Style{fg: :black, bg: :yellow, modifiers: [:bold]}
+                          )
+                        ])
+                      else
+                        Line.new([
+                          Span.new(prefix <> label <> ": ", style: %Style{fg: :cyan}),
+                          Span.new(val, style: %Style{fg: :white})
+                        ])
+                      end
+
+                    focused? ->
                       Line.new([
-                        Span.new(prefix <> label <> ": ",
-                          style: %Style{fg: :yellow, modifiers: [:bold]}
-                        ),
-                        Span.new(val, style: %Style{fg: :black, bg: :yellow, modifiers: [:bold]})
+                        Span.new(prefix <> to_string(f.label),
+                          style: %Style{fg: :black, bg: :yellow, modifiers: [:bold]}
+                        )
                       ])
-                    else
+
+                    true ->
+                      btn_fg =
+                        if String.contains?(to_string(f.label), "Delete"), do: :red, else: :white
+
                       Line.new([
-                        Span.new(prefix <> label <> ": ", style: %Style{fg: :cyan}),
-                        Span.new(val, style: %Style{fg: :white})
+                        Span.new(prefix <> to_string(f.label),
+                          style: %Style{fg: btn_fg, modifiers: [:bold]}
+                        )
                       ])
-                    end
+                  end
+                end)
 
-                  focused? ->
-                    Line.new([
-                      Span.new(prefix <> to_string(f.label),
-                        style: %Style{fg: :black, bg: :yellow, modifiers: [:bold]}
-                      )
-                    ])
-
-                  true ->
-                    btn_fg =
-                      if String.contains?(to_string(f.label), "Delete"), do: :red, else: :white
-
-                    Line.new([
-                      Span.new(prefix <> to_string(f.label),
-                        style: %Style{fg: btn_fg, modifiers: [:bold]}
-                      )
-                    ])
-                end
-              end)
+              {lines, []}
 
             _ ->
               raw_content =
@@ -1788,30 +1988,38 @@ defmodule Strata.UI.Renderer do
                   other -> to_string(other || inspect(top))
                 end
 
-              cond do
-                match?(%{format: :json}, rendered_info) ->
-                  body_text =
+              {body_text, hint_metas} =
+                case String.split(raw_content, "\n─────", parts: 2) do
+                  [body, hint] ->
+                    hint_line =
+                      Line.new([Span.new("─────" <> hint, style: %Style{fg: :dark_gray})])
+
+                    {body, [%{line: hint_line, continued?: false, text: "─────" <> hint}]}
+
+                  _ ->
+                    {raw_content, []}
+                end
+
+              max_mw = max(12, modal_area.width - 4)
+
+              line_metas =
+                cond do
+                  match?(%{format: :json}, rendered_info) ->
+                    Strata.Formatter.highlight_json_lines_with_meta(body_text, max_mw) ++
+                      hint_metas
+
+                  Map.get(rendered_info, :wrap_lines, false) ->
+                    Strata.Formatter.wrap_text_lines_with_meta(body_text, max_mw) ++ hint_metas
+
+                  true ->
                     raw_content
-                    |> String.split("\n─────", parts: 2)
-                    |> List.first()
+                    |> String.split("\n")
+                    |> Enum.map(fn ln ->
+                      %{line: Line.new([Span.new(ln)]), continued?: false, text: ln}
+                    end)
+                end
 
-                  hint_part =
-                    case String.split(raw_content, "\n─────", parts: 2) do
-                      [_, hint] ->
-                        [Line.new([Span.new("─────" <> hint, style: %Style{fg: :dark_gray})])]
-
-                      _ ->
-                        []
-                    end
-
-                  max_mw = max(12, modal_area.width - 4)
-                  Strata.Formatter.highlight_json_lines(body_text, max_mw) ++ hint_part
-
-                true ->
-                  raw_content
-                  |> String.split("\n")
-                  |> Enum.map(fn ln -> Line.new([Span.new(ln)]) end)
-              end
+              {Enum.map(line_metas, & &1.line), wrapped_region_for_rect(modal_area, line_metas)}
           end
 
         status_lines =
@@ -1847,46 +2055,39 @@ defmodule Strata.UI.Renderer do
           }
         }
 
-        [{clear_widget, m_rect}, {modal_widget, m_rect}]
+        {[{clear_widget, m_rect}, {modal_widget, m_rect}], modal_regions}
 
       [] ->
-        []
+        {[], []}
     end
   end
 
-  @doc """
-  Converts rendered component tree into ANSI terminal string representation.
-  """
-  def to_ansi(app) do
-    {width, _height} = app.window_size
+  defp wrapped_region_for_rect(rect, visible_metas, x_offset \\ 0) do
+    inner_w = max(0, rect.width - 2)
+    inner_h = max(0, rect.height - 2)
 
-    header_line =
-      "\e[1;44;37m 🗄️  Strata TUI — Database Manager \e[0m" <>
-        String.duplicate(" ", max(0, width - 36)) <> "\n"
+    if inner_w > 0 and inner_h > 0 do
+      min_x = rect.x + 1 + x_offset
+      max_x = rect.x + rect.width - 2
+      min_y = rect.y + 1
+      max_y = rect.y + rect.height - 2
 
-    sidebar_lines =
-      Sidebar.flatten_visible_nodes(app.sidebar_nodes, app.selected_tree_node_id)
-      |> Enum.map_join("\n", fn n -> "  #{n.label}" end)
+      if min_x <= max_x do
+        rows =
+          visible_metas
+          |> Enum.take(inner_h)
+          |> Enum.with_index()
+          |> Map.new(fn {meta, idx} ->
+            {min_y + idx,
+             %{continued?: Map.get(meta, :continued?, false), text: Map.get(meta, :text, "")}}
+          end)
 
-    sidebar_text =
-      " [🔌 CONNECTIONS]\n" <>
-        if(sidebar_lines != "",
-          do: sidebar_lines <> "\n",
-          else: "  (No connections configured)\n"
-        )
-
-    active_tab = Enum.find(app.tabs, &(&1.id == app.active_tab_id)) || List.first(app.tabs)
-    sql_text = if active_tab, do: active_tab.content, else: ""
-    editor_text = " [📜 SQL EDITOR]\n  1 │ #{sql_text}\n"
-
-    grid_count = if app.datagrid_state, do: length(app.datagrid_state.rows), else: 0
-
-    datagrid_text =
-      " [📊 DATA GRID (#{grid_count} rows)]\n" <>
-        if(grid_count == 0, do: "  (No data loaded)\n", else: "  #{grid_count} rows in grid\n")
-
-    footer_text = "\n\e[7m [1] Table  [2] SQL  [3] Data  [a] Add Conn  [q] Quit \e[0m"
-
-    header_line <> sidebar_text <> "\n" <> editor_text <> "\n" <> datagrid_text <> footer_text
+        [%{bounds: %{min_x: min_x, max_x: max_x, min_y: min_y, max_y: max_y}, rows: rows}]
+      else
+        []
+      end
+    else
+      []
+    end
   end
 end

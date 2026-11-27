@@ -147,6 +147,12 @@ defmodule Strata.Formatter do
 
   def decode_json_pretty(_), do: :error
 
+  @type wrapped_line :: %{
+          line: ExRatatui.Text.Line.t(),
+          continued?: boolean(),
+          text: String.t()
+        }
+
   @doc """
   Tokenizes a pretty-printed JSON string into syntax-highlighted `ExRatatui.Text.Line` structs,
   optionally wrapping lines to `max_width`.
@@ -154,14 +160,25 @@ defmodule Strata.Formatter do
   @spec highlight_json_lines(String.t(), pos_integer() | nil) :: [ExRatatui.Text.Line.t()]
   def highlight_json_lines(json_str, max_width \\ nil) when is_binary(json_str) do
     json_str
+    |> highlight_json_lines_with_meta(max_width)
+    |> Enum.map(& &1.line)
+  end
+
+  @doc """
+  Tokenizes a pretty-printed JSON string into syntax-highlighted wrapped lines with
+  `continued?` and raw `text` provenance for copy/selection handling.
+  """
+  @spec highlight_json_lines_with_meta(String.t(), pos_integer() | nil) :: [wrapped_line()]
+  def highlight_json_lines_with_meta(json_str, max_width \\ nil) when is_binary(json_str) do
+    json_str
     |> String.split("\n")
     |> Enum.flat_map(fn line_str ->
       spans = tokenize_json_line(line_str)
 
       if is_integer(max_width) and max_width > 0 do
-        wrap_spans(spans, max_width)
+        wrap_spans_with_meta(spans, max_width)
       else
-        [ExRatatui.Text.Line.new(spans)]
+        [%{line: ExRatatui.Text.Line.new(spans), continued?: false, text: line_str}]
       end
     end)
   end
@@ -173,16 +190,43 @@ defmodule Strata.Formatter do
           ExRatatui.Text.Line.t()
         ]
   def wrap_text_lines(text, max_width, style \\ %Style{fg: :white}) when is_binary(text) do
+    text
+    |> wrap_text_lines_with_meta(max_width, style)
+    |> Enum.map(& &1.line)
+  end
+
+  @doc """
+  Wraps plain text into `ExRatatui.Text.Line` structs with `continued?` and raw `text`
+  provenance for copy/selection handling.
+  """
+  @spec wrap_text_lines_with_meta(String.t(), pos_integer(), ExRatatui.Style.t()) :: [
+          wrapped_line()
+        ]
+  def wrap_text_lines_with_meta(text, max_width, style \\ %Style{fg: :white})
+      when is_binary(text) do
     w = max(4, max_width)
 
     text
     |> String.split("\n")
     |> Enum.flat_map(fn ln ->
       if ln == "" do
-        [ExRatatui.Text.Line.new([%Span{content: "", style: style}])]
+        [
+          %{
+            line: ExRatatui.Text.Line.new([%Span{content: "", style: style}]),
+            continued?: false,
+            text: ""
+          }
+        ]
       else
         wrap_string(ln, w)
-        |> Enum.map(fn seg -> ExRatatui.Text.Line.new([%Span{content: seg, style: style}]) end)
+        |> Enum.with_index()
+        |> Enum.map(fn {seg, idx} ->
+          %{
+            line: ExRatatui.Text.Line.new([%Span{content: seg, style: style}]),
+            continued?: idx > 0,
+            text: seg
+          }
+        end)
       end
     end)
   end
@@ -239,7 +283,7 @@ defmodule Strata.Formatter do
     end
   end
 
-  defp wrap_spans(spans, max_width) do
+  defp wrap_spans_with_meta(spans, max_width) do
     w = max(4, max_width)
 
     {rev_lines, rev_cur, _cur_len} =
@@ -254,7 +298,7 @@ defmodule Strata.Formatter do
             new_lines =
               if cur == [],
                 do: acc_lines,
-                else: [ExRatatui.Text.Line.new(Enum.reverse(cur)) | acc_lines]
+                else: [Enum.reverse(cur) | acc_lines]
 
             {new_lines, [%Span{content: txt, style: st}], len_txt}
 
@@ -266,7 +310,7 @@ defmodule Strata.Formatter do
             base_lines =
               if cur == [],
                 do: acc_lines,
-                else: [ExRatatui.Text.Line.new(Enum.reverse(cur)) | acc_lines]
+                else: [Enum.reverse(cur) | acc_lines]
 
             if rest == [] do
               {base_lines, [%Span{content: first, style: st}], String.length(first)}
@@ -275,7 +319,7 @@ defmodule Strata.Formatter do
 
               rev_added =
                 Enum.reduce([first | mid], base_lines, fn s, acc ->
-                  [ExRatatui.Text.Line.new([%Span{content: s, style: st}]) | acc]
+                  [[%Span{content: s, style: st}] | acc]
                 end)
 
               {rev_added, [%Span{content: last, style: st}], String.length(last)}
@@ -285,12 +329,21 @@ defmodule Strata.Formatter do
 
     rev_final =
       if rev_cur != [] or rev_lines == [] do
-        [ExRatatui.Text.Line.new(Enum.reverse(rev_cur)) | rev_lines]
+        [Enum.reverse(rev_cur) | rev_lines]
       else
         rev_lines
       end
 
-    Enum.reverse(rev_final)
+    rev_final
+    |> Enum.reverse()
+    |> Enum.with_index()
+    |> Enum.map(fn {line_spans, idx} ->
+      %{
+        line: ExRatatui.Text.Line.new(line_spans),
+        continued?: idx > 0,
+        text: Enum.map_join(line_spans, "", & &1.content)
+      }
+    end)
   end
 
   defp wrap_string(str, width) do
@@ -332,6 +385,36 @@ defmodule Strata.Formatter do
   end
 
   def format_cell_detail(val), do: to_string(val)
+
+  @doc """
+  Detects cell value type (`nil | :json | :text | :uuid | :binary | :primitive`)
+  and returns `{detected_type, formatted_text}` for the Right Inspector Drawer.
+  """
+  @spec inspect_cell_value(term()) :: {atom() | nil, String.t()}
+  def inspect_cell_value(nil), do: {nil, "<NULL>"}
+
+  def inspect_cell_value(value) when is_map(value) or is_list(value) do
+    case Jason.encode(value, pretty: true) do
+      {:ok, json_str} -> {:json, json_str}
+      _ -> {:primitive, inspect(value)}
+    end
+  end
+
+  def inspect_cell_value(value) when is_binary(value) do
+    case decode_json_pretty(value) do
+      {:ok, json_str} ->
+        {:json, json_str}
+
+      :error ->
+        cond do
+          String.printable?(value) -> {:text, value}
+          byte_size(value) == 16 -> {:uuid, format_uuid(value)}
+          true -> {:binary, format_cell_detail(value)}
+        end
+    end
+  end
+
+  def inspect_cell_value(value), do: {:primitive, to_string(value)}
 
   @doc """
   Converts a 16-byte raw binary into canonical UUID string format (8-4-4-4-12).

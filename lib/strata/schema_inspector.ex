@@ -25,10 +25,6 @@ defmodule Strata.SchemaInspector do
     e -> fetch_fallback_nodes(profile, Exception.message(e), opts)
   end
 
-  def fetch_online_nodes(%ConnectionProfile{} = profile, opts \\ []) do
-    fetch_tree_nodes(profile, opts)
-  end
-
   defp build_online_nodes(%ConnectionProfile{} = profile, worker, opts) do
     driver = Strata.Adapter.normalize_driver(profile.driver)
     expanded? = Keyword.get(opts, :expanded?, true)
@@ -532,6 +528,108 @@ defmodule Strata.SchemaInspector do
               |> Enum.map(&hd/1)
 
             {:ok, %{columns: headers, rows: rows, primary_keys: primary_keys}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      _ ->
+        {:error, :unsupported_driver}
+    end
+  end
+
+  @doc """
+  Prefetches `{schema, table_name, [col_names]}` for all tables/views in `profile`
+  using a single metadata query (Postgres/MySQL) or table_info scan (SQLite).
+  """
+  @spec fetch_all_columns(ConnectionProfile.t()) ::
+          {:ok, [{String.t() | nil, String.t(), [String.t()]}]} | {:error, term()}
+  def fetch_all_columns(%ConnectionProfile{} = profile) do
+    case ConnectionWorker.with_worker(profile, fn worker ->
+           fetch_all_columns_with_worker(worker, profile.driver)
+         end) do
+      {:ok, res} -> res
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  defp fetch_all_columns_with_worker(worker, driver) do
+    case Strata.Adapter.normalize_driver(driver) do
+      :postgres ->
+        sql = """
+        SELECT table_schema, table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+          AND table_schema NOT LIKE 'pg_temp%'
+          AND table_schema NOT LIKE 'pg_toast_temp%'
+        ORDER BY table_schema, table_name, ordinal_position;
+        """
+
+        case ConnectionWorker.execute_query(worker, sql) do
+          {:ok, %{rows: rows}} ->
+            entries =
+              rows
+              |> Enum.group_by(fn [s, t, _c] -> {to_string(s), to_string(t)} end, fn [_s, _t, c] ->
+                to_string(c)
+              end)
+              |> Enum.map(fn {{s, t}, cols} -> {s, t, cols} end)
+
+            {:ok, entries}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      :mysql ->
+        sql = """
+        SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
+        FROM information_schema.columns
+        WHERE TABLE_SCHEMA = DATABASE()
+        ORDER BY TABLE_NAME, ORDINAL_POSITION;
+        """
+
+        case ConnectionWorker.execute_query(worker, sql) do
+          {:ok, %{rows: rows}} ->
+            entries =
+              rows
+              |> Enum.group_by(fn [s, t, _c] -> {to_string(s), to_string(t)} end, fn [_s, _t, c] ->
+                to_string(c)
+              end)
+              |> Enum.map(fn {{s, t}, cols} -> {s, t, cols} end)
+
+            {:ok, entries}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      :sqlite ->
+        tbl_sql =
+          "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 100;"
+
+        case ConnectionWorker.execute_query(worker, tbl_sql) do
+          {:ok, %{rows: tbl_rows}} ->
+            entries =
+              Enum.flat_map(tbl_rows, fn [tbl] ->
+                t_name = to_string(tbl)
+                q_tbl = Strata.Adapter.quote_identifier(:sqlite, t_name)
+
+                case ConnectionWorker.execute_query(worker, "PRAGMA table_info(#{q_tbl});") do
+                  {:ok, %{rows: info_rows}} ->
+                    cols =
+                      Enum.map(info_rows, &to_string(Enum.at(&1, 1, "")))
+                      |> Enum.reject(&(&1 == ""))
+
+                    if cols != [], do: [{"main", t_name, cols}], else: []
+
+                  _ ->
+                    []
+                end
+              end)
+
+            {:ok, entries}
 
           {:error, reason} ->
             {:error, reason}

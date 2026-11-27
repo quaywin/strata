@@ -165,5 +165,106 @@ defmodule Strata.UI.Components.SQLEditorTest do
       assert active.content =~ "SET"
       assert active.completion.active? == false
     end
+
+    test "Enter and Tab accept selected suggestion when popup is open; Esc closes popup so Enter inserts newline" do
+      app =
+        App.new(focus: :editor)
+        |> SQLEditor.handle_key("S")
+        |> SQLEditor.handle_key("E")
+
+      active = Enum.find(app.tabs, &(&1.id == app.active_tab_id))
+      assert active.completion.active? == true
+
+      # Enter accepts highlighted suggestion when completion popup is open
+      app_enter = SQLEditor.handle_key(app, :down) |> SQLEditor.handle_key(:enter)
+      active_enter = Enum.find(app_enter.tabs, &(&1.id == app_enter.active_tab_id))
+      assert active_enter.content == "SET"
+      assert active_enter.completion.active? == false
+
+      # Esc dismisses completion, then Enter inserts newline
+      app_esc = SQLEditor.handle_key(app, :esc)
+      app_nl = SQLEditor.handle_key(app_esc, :enter)
+      active_nl = Enum.find(app_nl.tabs, &(&1.id == app_nl.active_tab_id))
+      assert active_nl.content == "SE\n"
+      assert active_nl.completion.active? == false
+
+      # Left arrow moving back onto "SE" must NOT force completion open
+      app_left = SQLEditor.handle_key(app_nl, :left)
+      active_after_left = Enum.find(app_left.tabs, &(&1.id == app_left.active_tab_id))
+      assert active_after_left.completion.active? == false
+    end
+
+    test "Ctrl+Space opens clause-aware suggestions and linting detects bad columns or unclosed parens" do
+      Strata.DataStore.put_columns_cache("c_ed_test", "public", "users", ["id", "email"])
+
+      app =
+        App.new(focus: :editor)
+        |> put_in([Access.key(:tabs), Access.at(0), :profile_id], "c_ed_test")
+        |> put_in([Access.key(:tabs), Access.at(0), :content], "SELECT * FROM users u WHERE ")
+        |> put_in([Access.key(:tabs), Access.at(0), :cursor], {0, 28})
+
+      opened = SQLEditor.handle_key(app, {:ctrl, "space"})
+      tab = Enum.find(opened.tabs, &(&1.id == opened.active_tab_id))
+      assert tab.completion.active? == true
+
+      assert Enum.any?(
+               tab.completion.suggestions,
+               &(&1.insert_text == "u.email" and &1.detail == "users → email")
+             )
+
+      # Typing bad column produces diagnostic
+      bad_app = SQLEditor.handle_key(opened, {:paste, "u.missing_col"})
+      bad_tab = Enum.find(bad_app.tabs, &(&1.id == bad_app.active_tab_id))
+      assert Enum.any?(bad_tab.diagnostics, &(&1.message =~ "Column 'missing_col' not found"))
+    end
+  end
+
+  describe "Visual wrapping without inserting newlines" do
+    test "visual_layout wraps long lines with continuation gutter and preserves logical content" do
+      long_sql = "SELECT first_col, second_col, third_col FROM my_table;"
+      layout = SQLEditor.visual_layout(long_sql, {0, 25}, 20)
+
+      assert length(layout.visual_lines) == 3
+      [vl0, vl1, vl2] = layout.visual_lines
+
+      assert vl0.continued? == false
+      assert vl0.prefix == "  1 │ "
+      assert vl0.text == "SELECT first_col, se"
+
+      assert vl1.continued? == true
+      assert vl1.prefix == "    │ "
+      assert vl1.text == "cond_col, third_col "
+      assert vl1.has_cursor? == true
+      assert vl1.cursor_col == 5
+
+      assert vl2.continued? == true
+      assert vl2.text == "FROM my_table;"
+      assert layout.cursor_v_pos == {1, 5}
+    end
+
+    test "move_cursor_visual and handle_key move up/down across wrapped visual rows" do
+      long_sql = String.duplicate("a", 25) <> "\nSELECT 1;"
+      assert SQLEditor.move_cursor_visual(long_sql, {0, 5}, :down, 20) == {0, 25}
+      assert SQLEditor.move_cursor_visual(long_sql, {0, 25}, :up, 20) == {0, 5}
+      assert SQLEditor.move_cursor_visual(long_sql, {0, 22}, :down, 20) == {1, 2}
+
+      app =
+        App.new(window_size: {40, 20}, active_view: :query_view, focus: :editor)
+        |> put_in(
+          [Access.key(:tabs), Access.at(0), :content],
+          "SELECT alpha_column, beta_column, gamma_column FROM users;"
+        )
+        |> put_in([Access.key(:tabs), Access.at(0), :cursor], {0, 4})
+
+      ed_area = Strata.UI.Renderer.layout(app.window_size, :query_view).editor
+      %{code_width: cw} = SQLEditor.editor_metrics(hd(app.tabs).content, ed_area)
+      assert cw < String.length(hd(app.tabs).content)
+
+      moved_down = SQLEditor.handle_key(app, :down)
+      assert hd(moved_down.tabs).cursor == {0, cw + 4}
+
+      moved_up = SQLEditor.handle_key(moved_down, :up)
+      assert hd(moved_up.tabs).cursor == {0, 4}
+    end
   end
 end

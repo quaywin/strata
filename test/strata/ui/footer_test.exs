@@ -11,8 +11,14 @@ defmodule Strata.UI.Components.FooterTest do
 
       assert rendered.area == %{x: 0, y: 39, width: 120, height: 1}
       assert is_binary(rendered.text)
-      assert rendered.text =~ "Table/Query View"
+      assert rendered.text =~ "New SQL Tab"
       assert rendered.text =~ "Add Conn"
+
+      app_editor = App.new(focus: :editor)
+      rendered_ed = Footer.render(app_editor, %{x: 0, y: 39, width: 120, height: 1})
+      assert rendered_ed.text =~ "Ctrl+Enter"
+      assert rendered_ed.text =~ "Ctrl+←/→"
+      assert rendered_ed.text =~ "Ctrl+W"
 
       app_with_status = %{app_sidebar | status_message: "[Cache] Loaded users (50 rows)"}
       rendered_status = Footer.render(app_with_status, %{x: 0, y: 39, width: 120, height: 1})
@@ -20,7 +26,9 @@ defmodule Strata.UI.Components.FooterTest do
     end
 
     test "renders modal keybindings when modal active" do
-      app_modal = App.new() |> App.push_modal(%{type: :connection_modal, title: "New Connection"})
+      app_modal =
+        App.new() |> App.push_modal(Strata.UI.Components.ConnectionModal.new())
+
       rendered = Footer.render(app_modal, %{x: 0, y: 39, width: 120, height: 1})
 
       assert rendered.text =~ "Esc" or rendered.text =~ "Cancel"
@@ -38,6 +46,20 @@ defmodule Strata.UI.Components.FooterTest do
       assert Map.has_key?(first_action, :label)
       assert Map.has_key?(first_action, :key)
       assert Map.has_key?(first_action, :area)
+
+      # Uppercase shortcut keys retain case so clicking 'S' (SSH) or 'E' (Export) dispatches accurately
+      assert Enum.any?(actions, &(&1.key == :S))
+
+      grid_app =
+        App.new(
+          focus: :datagrid,
+          active_view: :table_view,
+          datagrid_state: Strata.UI.Components.DataGrid.new(["id"], [[1]])
+        )
+
+      grid_actions = Footer.clickable_actions(grid_app, area)
+      assert Enum.any?(grid_actions, &(&1.key == :E))
+      assert Enum.any?(grid_actions, &(&1.key == :"ctrl+g"))
     end
   end
 end

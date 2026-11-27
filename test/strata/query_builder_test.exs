@@ -162,4 +162,39 @@ defmodule Strata.QueryBuilderTest do
       assert null_sql == ~s[SELECT * FROM "users" WHERE "email" IS NULL LIMIT 200;]
     end
   end
+
+  describe "paginate_select_query/3" do
+    test "wraps un-limited SELECT and CTE queries with LIMIT + 1 for has_more detection" do
+      assert {:paginated, wrapped, 100} =
+               QueryBuilder.paginate_select_query(
+                 "SELECT * FROM users WHERE active = true;",
+                 100,
+                 0
+               )
+
+      assert wrapped ==
+               "SELECT * FROM (SELECT * FROM users WHERE active = true) AS _strata_page LIMIT 101 OFFSET 0"
+
+      assert {:paginated, cte_wrapped, 50} =
+               QueryBuilder.paginate_select_query(
+                 "WITH active_u AS (SELECT * FROM users LIMIT 10) SELECT * FROM active_u",
+                 50,
+                 50
+               )
+
+      assert cte_wrapped ==
+               "SELECT * FROM (WITH active_u AS (SELECT * FROM users LIMIT 10) SELECT * FROM active_u) AS _strata_page LIMIT 51 OFFSET 50"
+    end
+
+    test "passes through queries with user LIMIT, non-SELECT, or multi-statement SQL" do
+      assert :passthrough = QueryBuilder.paginate_select_query("SELECT * FROM users LIMIT 25;")
+
+      assert :passthrough =
+               QueryBuilder.paginate_select_query("SELECT * FROM users FETCH FIRST 10 ROWS ONLY")
+
+      assert :passthrough = QueryBuilder.paginate_select_query("DELETE FROM users WHERE id = 1;")
+      assert :passthrough = QueryBuilder.paginate_select_query("EXPLAIN SELECT * FROM users;")
+      assert :passthrough = QueryBuilder.paginate_select_query("SELECT 1; SELECT 2;")
+    end
+  end
 end

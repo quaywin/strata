@@ -46,7 +46,7 @@ defmodule Strata.UI.RendererTest do
       widgets = Renderer.render(app)
 
       assert is_list(widgets)
-      assert length(widgets) == 6
+      assert length(widgets) == 9
 
       Enum.each(widgets, fn {widget, rect} ->
         assert is_struct(rect, ExRatatui.Layout.Rect)
@@ -57,13 +57,13 @@ defmodule Strata.UI.RendererTest do
     test "renders modal overlay when app modal stack is not empty" do
       app =
         App.new(window_size: {120, 40})
-        |> App.push_modal(%{type: :connection_modal, title: "Add Connection"})
+        |> App.push_modal(Strata.UI.Components.ConnectionModal.new())
 
       widgets = Renderer.render(app)
 
       assert is_list(widgets)
-      # 6 main widgets + 2 modal widgets (Clear + Paragraph)
-      assert length(widgets) == 8
+      # 9 main widgets (incl. unified tab bar) + 2 modal widgets (Clear + Paragraph)
+      assert length(widgets) == 11
 
       {modal_para, modal_rect} = List.last(widgets)
       assert is_struct(modal_rect, ExRatatui.Layout.Rect)
@@ -78,14 +78,8 @@ defmodule Strata.UI.RendererTest do
 
       modals = [
         Strata.UI.Components.ConnectionModal.new(),
-        Strata.UI.Components.CellDetailModal.new("sample content"),
-        Strata.UI.Components.FilterExportModal.new(:filter),
-        Strata.UI.Components.FilterExportModal.new(:export),
-        Strata.UI.Components.SSHModal.new(),
-        %{type: :cell_detail_modal, title: "Cell Detail", content: "val"},
-        %{type: :filter_modal, title: "Filter"},
-        %{type: :export_modal, title: "Export"},
-        %{type: :ssh_modal, title: "SSH"}
+        Strata.UI.Components.ExportModal.new(),
+        Strata.UI.Components.SSHModal.new()
       ]
 
       Enum.each(modals, fn modal ->
@@ -172,10 +166,13 @@ defmodule Strata.UI.RendererTest do
                  App.render(filter_and_inspector_app, large_frame)
                )
 
-      raw_filter_app = App.handle_key(filter_and_inspector_app, {:ctrl, "r"})
+      sort_focused_app = %{filter_and_inspector_app | filter_bar_focus_part: :sort}
 
       assert :ok ==
-               ExRatatui.CellSession.draw(large_session, App.render(raw_filter_app, large_frame))
+               ExRatatui.CellSession.draw(
+                 large_session,
+                 App.render(sort_focused_app, large_frame)
+               )
 
       dd_col_app = %{filter_and_inspector_app | filter_dropdown: :column, filter_dropdown_idx: 0}
       assert :ok == ExRatatui.CellSession.draw(large_session, App.render(dd_col_app, large_frame))
@@ -266,6 +263,66 @@ defmodule Strata.UI.RendererTest do
       assert insp_3.value_lines == insp_data.value_lines
       assert insp_3.summary_lines == insp_data.summary_lines
       assert insp_3.total_rows == insp_data.total_rows
+
+      # Tab bar [×] close rect aligns 1:1 with rendered terminal cells for :table and :query tabs
+      table_tab = %{id: "tab_tbl_1", kind: :table, name: "users", table_name: "users"}
+      query_tab = %{id: "tab_q_1", kind: :query, name: "Query 1", content: "", cursor: {0, 0}}
+
+      tab_app =
+        App.new(
+          window_size: {120, 30},
+          active_view: :table_view,
+          tabs: [table_tab, query_tab],
+          active_tab_id: "tab_tbl_1"
+        )
+
+      assert :ok == ExRatatui.CellSession.draw(large_session, App.render(tab_app, large_frame))
+      tab_layout = Renderer.layout({120, 30}, :table_view).tabs
+      tb = Renderer.tab_bar_layout(tab_app, tab_layout)
+      tbl_item = Enum.find(tb.tabs, &(&1.id == "tab_tbl_1"))
+      assert tbl_item.close_rect.width == 3
+      assert tbl_item.label =~ "[×]"
+
+      assert :ok == ExRatatui.CellSession.draw(session, App.render(query_app, frame))
+
+      editor_scrollbars =
+        Renderer.render(query_app)
+        |> Enum.filter(fn {w, _r} -> is_struct(w, ExRatatui.Widgets.Scrollbar) end)
+
+      assert length(editor_scrollbars) >= 1
+
+      # SQL completion popup with `detail` (`users → email`) and editor diagnostic title render cleanly in CellSession
+      comp_diag_app =
+        App.new(window_size: {120, 30}, active_view: :query_view, focus: :editor)
+        |> put_in([Access.key(:tabs), Access.at(0), :content], "SELECT * FROM users u WHERE u.")
+        |> put_in([Access.key(:tabs), Access.at(0), :cursor], {0, 30})
+        |> put_in([Access.key(:tabs), Access.at(0), :completion], %{
+          active?: true,
+          prefix: "u.",
+          selected_index: 0,
+          suggestions: [
+            %{label: "u.email", type: :column, insert_text: "u.email", detail: "users → email"}
+          ]
+        })
+        |> put_in([Access.key(:tabs), Access.at(0), :diagnostics], [
+          %{severity: :error, line: 0, col: 0, message: "Unclosed '('", token: "("}
+        ])
+
+      assert :ok ==
+               ExRatatui.CellSession.draw(large_session, App.render(comp_diag_app, large_frame))
+
+      # Paginated query result shows `scroll for more` status in grid title
+      q_grid = DataGrid.new(["id"], [[1]], has_more: true, loading_more: false)
+
+      q_more_app =
+        App.new(window_size: {120, 30}, active_view: :query_view, datagrid_state: q_grid)
+
+      q_titles =
+        Renderer.render(q_more_app)
+        |> Enum.map(fn {w, _} -> Map.get(w, :block) && w.block.title end)
+        |> Enum.reject(&is_nil/1)
+
+      assert Enum.any?(q_titles, &(&1 =~ "QUERY RESULT GRID" and &1 =~ "scroll for more"))
     end
   end
 end

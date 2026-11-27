@@ -44,6 +44,32 @@ defmodule Strata.UI.Components.ActionsModalTest do
       assert {:cancel, _} = ActionsModal.handle_key(wrapped_down, "?")
       assert {:cancel, _} = ActionsModal.handle_key(wrapped_down, :esc)
     end
+
+    test "builds focus-aware action lists for :sidebar, :editor, and :datagrid with inspector options" do
+      grid = DataGrid.new(["id"], [[1]], sort_by: {"id", :asc})
+
+      sidebar_modal = ActionsModal.new(grid, :table_view, focus: :sidebar)
+      sidebar_ids = Enum.map(sidebar_modal.items, & &1.id)
+      assert hd(sidebar_ids) == :sidebar_add_conn
+      assert :sidebar_ssh in sidebar_ids
+      assert :sidebar_refresh in sidebar_ids
+      refute :edit_cell in sidebar_ids
+
+      editor_modal = ActionsModal.new(grid, :query_view, focus: :editor)
+      editor_ids = Enum.map(editor_modal.items, & &1.id)
+      assert hd(editor_ids) == :run_query
+      assert :trigger_autocomplete in editor_ids
+      assert :clear_editor in editor_ids
+      assert :focus_grid in editor_ids
+
+      inspector_modal =
+        ActionsModal.new(grid, :table_view, focus: :datagrid, inspector_open: true)
+
+      inspector_ids = Enum.map(inspector_modal.items, & &1.id)
+      assert :toggle_select_mode in inspector_ids
+      assert :cycle_inspector_format in inspector_ids
+      assert :clear_sort in inspector_ids
+    end
   end
 
   describe "Unified compact KeyRegistry" do
@@ -67,6 +93,19 @@ defmodule Strata.UI.Components.ActionsModalTest do
         )
 
       assert KeyRegistry.determine_context(editing_app) == :datagrid_editing
+
+      editor_keys = Enum.map(KeyRegistry.get_shortcuts(App.new(focus: :editor)), &elem(&1, 0))
+      assert "Ctrl+Space" in editor_keys
+      assert "Ctrl+P" in editor_keys
+
+      browsing_keys =
+        App.new(focus: :datagrid, active_view: :table_view, datagrid_state: DataGrid.new())
+        |> KeyRegistry.get_shortcuts()
+        |> Enum.map(&elem(&1, 0))
+
+      assert "v" in browsing_keys
+      assert "Ctrl+G" in browsing_keys
+      assert "E" in browsing_keys
     end
   end
 end

@@ -85,11 +85,11 @@ defmodule Strata.UI.SelectionTest do
 
       layout = Renderer.layout({120, 30}, :query_view)
       ed = layout.editor
-      # Body starts at ed.y + 1 (tabs row), border top at ed.y + 1, first code char at ed.x + 7
+      # Border top at ed.y, first code char at ed.x + 7, ed.y + 1
       start_x = ed.x + 7
-      start_y = ed.y + 2
+      start_y = ed.y + 1
       end_x = ed.x + 30
-      end_y = ed.y + 3
+      end_y = ed.y + 2
 
       {:noreply, s1, _} =
         App.handle_event(%Mouse{kind: "down", button: "left", x: start_x, y: start_y}, app)
@@ -123,14 +123,14 @@ defmodule Strata.UI.SelectionTest do
       ed = Renderer.layout({120, 30}, :query_view).editor
 
       {:noreply, s1, _} =
-        App.handle_event(%Mouse{kind: "down", button: "left", x: ed.x + 7, y: ed.y + 2}, app)
+        App.handle_event(%Mouse{kind: "down", button: "left", x: ed.x + 7, y: ed.y + 1}, app)
 
       {:noreply, s2, _} =
-        App.handle_event(%Mouse{kind: "drag", button: "left", x: ed.x + 12, y: ed.y + 2}, s1)
+        App.handle_event(%Mouse{kind: "drag", button: "left", x: ed.x + 12, y: ed.y + 1}, s1)
 
       # Even if mouse_up reports +1 col jitter (x = ed.x + 13), copied text matches exact dragged highlight "SELECT"
       {:noreply, _s3, _} =
-        App.handle_event(%Mouse{kind: "up", button: "left", x: ed.x + 13, y: ed.y + 2}, s2)
+        App.handle_event(%Mouse{kind: "up", button: "left", x: ed.x + 13, y: ed.y + 1}, s2)
 
       assert {:ok, "SELECT"} = Clipboard.paste()
     end
@@ -280,9 +280,9 @@ defmodule Strata.UI.SelectionTest do
 
       ed = Renderer.layout({120, 30}, :query_view).editor
       ax = ed.x + 7
-      ay = ed.y + 2
+      ay = ed.y + 1
       cx = ed.x + 30
-      cy = ed.y + 2
+      cy = ed.y + 1
 
       {:noreply, s1, _} =
         App.handle_event(%Mouse{kind: "down", button: "left", x: ax, y: ay}, scrolled_app)
@@ -403,21 +403,21 @@ defmodule Strata.UI.SelectionTest do
         |> put_in([Access.key(:tabs), Access.at(0), :content], "SELECT id FROM users;")
 
       ed = Renderer.layout({120, 30}, :query_view).editor
-      bounds = Selection.bounds_for_anchor(app, {ed.x + 7, ed.y + 2})
-      assert bounds.min_y == ed.y + 2
+      bounds = Selection.bounds_for_anchor(app, {ed.x + 7, ed.y + 1})
+      assert bounds.min_y == ed.y + 1
       assert bounds.min_x == ed.x + 7
 
       # Drag out then back to anchor shrinks selection to 1 char and copies "S"
-      anchor = {ed.x + 7, ed.y + 2}
+      anchor = {ed.x + 7, ed.y + 1}
 
       {:noreply, s1, _} =
-        App.handle_event(%Mouse{kind: "down", button: "left", x: ed.x + 7, y: ed.y + 2}, app)
+        App.handle_event(%Mouse{kind: "down", button: "left", x: ed.x + 7, y: ed.y + 1}, app)
 
       {:noreply, s2, _} =
-        App.handle_event(%Mouse{kind: "drag", button: "left", x: ed.x + 12, y: ed.y + 2}, s1)
+        App.handle_event(%Mouse{kind: "drag", button: "left", x: ed.x + 12, y: ed.y + 1}, s1)
 
       {:noreply, s3, _} =
-        App.handle_event(%Mouse{kind: "drag", button: "left", x: ed.x + 7, y: ed.y + 2}, s2)
+        App.handle_event(%Mouse{kind: "drag", button: "left", x: ed.x + 7, y: ed.y + 1}, s2)
 
       assert s3.text_selection == {anchor, anchor}
 
@@ -431,9 +431,88 @@ defmodule Strata.UI.SelectionTest do
 
       # Releasing after shrinking copies single character "S"
       {:noreply, _s4, _} =
-        App.handle_event(%Mouse{kind: "up", button: "left", x: ed.x + 7, y: ed.y + 2}, s3)
+        App.handle_event(%Mouse{kind: "up", button: "left", x: ed.x + 7, y: ed.y + 1}, s3)
 
       assert {:ok, "S"} = Clipboard.paste()
+    end
+
+    test "Inspector copy distinguishes soft-wrapped continuations from real newlines and keeps wrap spaces" do
+      # Line 1 has a space right at the wrap boundary and wraps onto the next screen row;
+      # Line 2 is separated by a real "\n".
+      text_val = "alpha bravo charlie delta echo foxtrot golf hotel\nsecond logical line"
+
+      grid =
+        DataGrid.new(["id", "note"], [[1, text_val]], mode: :selecting, selected_cell: {0, 1})
+
+      app =
+        App.new(
+          window_size: {100, 30},
+          active_view: :table_view,
+          focus: :datagrid,
+          datagrid_state: grid
+        )
+        |> App.open_inspector()
+
+      layout = Renderer.layout({100, 30}, :table_view)
+      %{inspector_area: i_area} = Renderer.datagrid_areas(layout.datagrid, app)
+      %{value_area: v_area} = Renderer.inspector_areas(i_area)
+
+      screen = Selection.capture_screen(app)
+      bounds = Selection.bounds_for_anchor(app, {v_area.x + 1, v_area.y + 1})
+
+      copied =
+        Selection.extract_text(
+          screen,
+          {v_area.x + 1, v_area.y + 1},
+          {v_area.x + v_area.width - 2, v_area.y + 4},
+          bounds
+        )
+
+      assert copied == text_val
+    end
+
+    test "SQL Editor soft-wraps long lines without inserting \\n, clicks wrapped lines accurately, and copies original SQL" do
+      long_line =
+        "SELECT first_column, second_column, third_column, fourth_column FROM analytics_events WHERE status = 'ok';"
+
+      sql = long_line <> "\nSELECT 2;"
+
+      app =
+        App.new(window_size: {80, 24}, active_view: :query_view, focus: :editor)
+        |> put_in([Access.key(:tabs), Access.at(0), :content], sql)
+
+      ed = Renderer.layout({80, 24}, :query_view).editor
+      %{gutter_width: gw, code_width: cw} = Strata.UI.Components.SQLEditor.editor_metrics(sql, ed)
+      assert cw < String.length(long_line)
+
+      screen = Selection.capture_screen(app)
+      code_x = ed.x + 1 + gw
+      bounds = Selection.bounds_for_anchor(app, {code_x, ed.y + 2})
+
+      # Drag from row 0 of the editor across wrapped rows and the second statement
+      copied =
+        Selection.extract_text(
+          screen,
+          {code_x, ed.y + 1},
+          {ed.x + ed.width - 2, ed.y + 4},
+          bounds
+        )
+
+      assert copied == sql
+
+      # Clicking on the second visual row (wrapped continuation of logical line 0)
+      # maps to logical_row = 0 and logical_col = cw + 3
+      click_x = code_x + 3
+      click_y = ed.y + 2
+
+      {:noreply, c1, _} =
+        App.handle_event(%Mouse{kind: "down", button: "left", x: click_x, y: click_y}, app)
+
+      {:noreply, c2, _} =
+        App.handle_event(%Mouse{kind: "up", button: "left", x: click_x, y: click_y}, c1)
+
+      assert hd(c2.tabs).cursor == {0, cw + 3}
+      assert hd(c2.tabs).content == sql
     end
   end
 

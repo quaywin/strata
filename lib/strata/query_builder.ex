@@ -415,4 +415,160 @@ defmodule Strata.QueryBuilder do
   defp placeholder(driver, idx) do
     if Adapter.normalize_driver(driver) == :postgres, do: "$#{idx}", else: "?"
   end
+
+  @doc """
+  Wraps a single `SELECT` / `WITH ... SELECT` statement lacking a top-level `LIMIT`
+  (or `FETCH FIRST/NEXT` / `FOR UPDATE`) into a paginated derived-table query requesting
+  `limit + 1` rows so callers can detect `has_more` without running `COUNT(*)`.
+
+  Returns `{:paginated, wrapped_sql, limit}` or `:passthrough`.
+  """
+  @spec paginate_select_query(String.t(), pos_integer(), non_neg_integer()) ::
+          {:paginated, String.t(), pos_integer()} | :passthrough
+  def paginate_select_query(sql, limit \\ 100, offset \\ 0)
+      when is_binary(sql) and is_integer(limit) and limit > 0 and is_integer(offset) and
+             offset >= 0 do
+    case single_statement_body(sql) do
+      nil ->
+        :passthrough
+
+      body ->
+        stripped = strip_leading_sql_comments(body)
+
+        if Regex.match?(~r/^(?:SELECT|WITH)\b/i, stripped) and
+             not has_top_level_limit_or_lock?(body) do
+          wrapped = "SELECT * FROM (#{body}) AS _strata_page LIMIT #{limit + 1} OFFSET #{offset}"
+          {:paginated, wrapped, limit}
+        else
+          :passthrough
+        end
+    end
+  end
+
+  defp single_statement_body(sql) do
+    {semis, _in_q, _in_lc, _in_bc} = scan_sql_state(sql, :semicolons)
+    trimmed = String.trim(sql)
+
+    cond do
+      trimmed == "" ->
+        nil
+
+      semis == [] ->
+        trimmed
+
+      length(semis) == 1 ->
+        pos = hd(semis)
+        after_semi = sql |> String.slice((pos + 1)..-1//1) |> String.trim()
+
+        if after_semi == "" do
+          sql |> String.slice(0, pos) |> String.trim()
+        else
+          nil
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  defp has_top_level_limit_or_lock?(sql) do
+    {top_level_text, _, _, _} = scan_sql_state(sql, :top_level_text)
+
+    Regex.match?(
+      ~r/\b(?:LIMIT\s+\d+|LIMIT\s+ALL|FETCH\s+(?:FIRST|NEXT)\b|INTO\s+OUTFILE\b|FOR\s+(?:UPDATE|SHARE)\b)/i,
+      top_level_text
+    )
+  end
+
+  defp strip_leading_sql_comments(sql) do
+    sql
+    |> String.trim_leading()
+    |> do_strip_leading_comments()
+  end
+
+  defp do_strip_leading_comments(sql) do
+    cond do
+      String.starts_with?(sql, "--") ->
+        case String.split(sql, "\n", parts: 2) do
+          [_line, rest] -> rest |> String.trim_leading() |> do_strip_leading_comments()
+          [_line] -> ""
+        end
+
+      String.starts_with?(sql, "/*") ->
+        case String.split(sql, "*/", parts: 2) do
+          [_comment, rest] -> rest |> String.trim_leading() |> do_strip_leading_comments()
+          [_unclosed] -> ""
+        end
+
+      true ->
+        sql
+    end
+  end
+
+  defp scan_sql_state(sql, mode) do
+    len = String.length(sql)
+    do_scan_sql(sql, 0, len, mode, [], 0, false, false, false)
+  end
+
+  defp do_scan_sql(_sql, idx, len, :top_level_text, acc, _depth, _q, _lc, _bc)
+       when idx >= len do
+    {acc |> Enum.reverse() |> IO.iodata_to_binary(), false, false, false}
+  end
+
+  defp do_scan_sql(_sql, idx, len, :semicolons, acc, _depth, _q, _lc, _bc) when idx >= len do
+    {Enum.reverse(acc), false, false, false}
+  end
+
+  defp do_scan_sql(sql, idx, len, mode, acc, depth, in_q?, in_lc?, in_bc?) do
+    ch = String.at(sql, idx)
+    nxt = String.at(sql, idx + 1)
+
+    cond do
+      in_lc? and ch == "\n" ->
+        next_acc = if mode == :top_level_text, do: ["\n" | acc], else: acc
+        do_scan_sql(sql, idx + 1, len, mode, next_acc, depth, false, false, false)
+
+      in_lc? ->
+        do_scan_sql(sql, idx + 1, len, mode, acc, depth, false, true, false)
+
+      in_bc? and ch == "*" and nxt == "/" ->
+        next_acc = if mode == :top_level_text, do: [" " | acc], else: acc
+        do_scan_sql(sql, idx + 2, len, mode, next_acc, depth, false, false, false)
+
+      in_bc? ->
+        do_scan_sql(sql, idx + 1, len, mode, acc, depth, false, false, true)
+
+      in_q? and ch == "'" and nxt == "'" ->
+        do_scan_sql(sql, idx + 2, len, mode, acc, depth, true, false, false)
+
+      in_q? and ch == "'" ->
+        next_acc = if mode == :top_level_text, do: [" " | acc], else: acc
+        do_scan_sql(sql, idx + 1, len, mode, next_acc, depth, false, false, false)
+
+      in_q? ->
+        do_scan_sql(sql, idx + 1, len, mode, acc, depth, true, false, false)
+
+      ch == "-" and nxt == "-" ->
+        do_scan_sql(sql, idx + 2, len, mode, acc, depth, false, true, false)
+
+      ch == "/" and nxt == "*" ->
+        do_scan_sql(sql, idx + 2, len, mode, acc, depth, false, false, true)
+
+      ch == "'" ->
+        do_scan_sql(sql, idx + 1, len, mode, acc, depth, true, false, false)
+
+      ch == "(" ->
+        do_scan_sql(sql, idx + 1, len, mode, acc, depth + 1, false, false, false)
+
+      ch == ")" ->
+        do_scan_sql(sql, idx + 1, len, mode, acc, max(0, depth - 1), false, false, false)
+
+      ch == ";" and mode == :semicolons ->
+        do_scan_sql(sql, idx + 1, len, mode, [idx | acc], depth, false, false, false)
+
+      true ->
+        next_acc = if mode == :top_level_text and depth == 0, do: [ch | acc], else: acc
+        do_scan_sql(sql, idx + 1, len, mode, next_acc, depth, false, false, false)
+    end
+  end
 end

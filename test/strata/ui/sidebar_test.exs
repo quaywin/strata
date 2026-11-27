@@ -179,24 +179,26 @@ defmodule Strata.UI.Components.SidebarTest do
   end
 
   describe "Sidebar rendering" do
-    test "renders tree component output for given area", %{app: app} do
+    test "renders viewport tree component output for given area", %{app: app} do
       area = %{x: 0, y: 0, width: 30, height: 20}
-      rendered = Sidebar.render(app, area)
+      vp = Sidebar.render_viewport(app, area)
 
-      assert is_map(rendered)
-      assert rendered.title == "CONNECTIONS / SCHEMA"
-      assert rendered.area == area
-      assert is_list(rendered.lines)
-      assert length(rendered.lines) > 0
+      assert is_map(vp)
+      assert vp.title == "CONNECTIONS / SCHEMA"
+      assert vp.viewport_h == 18
+      assert length(vp.styled_items) > 0
     end
 
     test "filters tree nodes with / and renders search title", %{app: app} do
       filtered_app = %{app | sidebar_filter: "ord", sidebar_filter_active: true}
-      rendered = Sidebar.render(filtered_app, %{x: 0, y: 0, width: 30, height: 20})
+      vp = Sidebar.render_viewport(filtered_app, %{x: 0, y: 0, width: 30, height: 20})
 
-      assert rendered.title == "CONNECTIONS / 🔍 ord▌"
-      assert Enum.any?(rendered.lines, &String.contains?(&1, "orders"))
-      refute Enum.any?(rendered.lines, &String.contains?(&1, "users"))
+      texts =
+        Enum.map(vp.styled_items, fn line -> Enum.map_join(line.spans, "", & &1.content) end)
+
+      assert vp.title == "CONNECTIONS / 🔍 ord▌"
+      assert Enum.any?(texts, &String.contains?(&1, "orders"))
+      refute Enum.any?(texts, &String.contains?(&1, "users"))
     end
 
     test "uses compact single-column glyphs, child counts, active table star, and styled lines",
@@ -207,15 +209,18 @@ defmodule Strata.UI.Components.SidebarTest do
           connection_statuses: %{"conn_pg" => :connected}
       }
 
-      rendered = Sidebar.render(active_app, %{x: 0, y: 0, width: 30, height: 20})
+      vp = Sidebar.render_viewport(active_app, %{x: 0, y: 0, width: 30, height: 20})
 
-      assert Enum.any?(rendered.lines, &String.contains?(&1, "● Prod Postgres"))
-      assert Enum.any?(rendered.lines, &String.contains?(&1, "▾ public (2)"))
-      assert Enum.any?(rendered.lines, &String.contains?(&1, "▦ users ★"))
-      assert length(rendered.styled_items) == length(rendered.lines)
+      texts =
+        Enum.map(vp.styled_items, fn line -> Enum.map_join(line.spans, "", & &1.content) end)
+
+      assert Enum.any?(texts, &String.contains?(&1, "● Prod Postgres"))
+      assert Enum.any?(texts, &String.contains?(&1, "▾ public (2)"))
+      assert Enum.any?(texts, &String.contains?(&1, "▦ users"))
+      refute Enum.any?(texts, &String.contains?(&1, "★"))
     end
 
-    test "render_viewport slices and styles only visible items matching full render", %{app: app} do
+    test "render_viewport slices and clamps scroll offset within bounds", %{app: app} do
       scrolled_app = %{
         app
         | sidebar_scroll_offset: 1,
@@ -223,15 +228,12 @@ defmodule Strata.UI.Components.SidebarTest do
       }
 
       area = %{x: 0, y: 0, width: 30, height: 5}
-
-      full = Sidebar.render(scrolled_app, area)
       vp = Sidebar.render_viewport(scrolled_app, area)
 
       assert vp.viewport_h == 3
       assert vp.clamped_offset == 1
-      assert vp.max_offset == length(full.styled_items) - 3
-      assert vp.selected_index == full.selected_index
-      assert vp.styled_items == Enum.slice(full.styled_items, 1, 3)
+      assert vp.max_offset == vp.total - 3
+      assert length(vp.styled_items) == 3
     end
   end
 end

@@ -65,5 +65,6 @@ defmodule Strata.UI.Components.Footer do
   defp parse_key_symbol("Tab"), do: :tab
   defp parse_key_symbol("Esc"), do: :esc
   defp parse_key_symbol("Enter"), do: :enter
+  defp parse_key_symbol(<<ch::utf8>> = upper) when ch in ?A..?Z, do: String.to_atom(upper)
   defp parse_key_symbol(other), do: String.to_atom(String.downcase(other))
 end

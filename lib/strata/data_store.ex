@@ -28,14 +28,6 @@ defmodule Strata.DataStore do
   end
 
   @doc """
-  Alias for `put_result_set/4`.
-  """
-  @spec store_result(String.t(), [String.t()], [list()], integer() | nil) :: :ok
-  def store_result(tab_id, columns, rows, total_rows \\ nil) do
-    put_result_set(tab_id, columns, rows, total_rows)
-  end
-
-  @doc """
   Retrieves a paginated slice of rows for a tab_id.
   Returns `{columns, sliced_rows, loaded_rows_count, total_rows}`.
   Page is 1-indexed.
@@ -171,6 +163,73 @@ defmodule Strata.DataStore do
       end
     else
       :miss
+    end
+  end
+
+  @doc """
+  Stores lightweight prefetched column names for `table_name` without overwriting
+  full Structure Inspector metadata in `:schema_cache`.
+  """
+  @spec put_columns_cache(String.t(), String.t() | nil, String.t(), [String.t()]) :: :ok
+  def put_columns_cache(conn_id, schema, table_name, columns)
+      when is_binary(conn_id) and is_binary(table_name) and is_list(columns) do
+    if :ets.info(@table_name) != :undefined do
+      key = {:columns_cache, conn_id, schema || "default", table_name}
+      true = :ets.insert(@table_name, {key, columns})
+    end
+
+    :ok
+  end
+
+  @doc """
+  Returns a map of `%{table_name => [column_name]}` from cached table schemas and
+  prefetched column caches for `conn_id`.
+  When `conn_id` is `nil`, returns cached columns across all connections.
+  """
+  @spec cached_columns(String.t() | nil) :: %{String.t() => [String.t()]}
+  def cached_columns(conn_id \\ nil) do
+    if :ets.info(@table_name) != :undefined do
+      schema_pattern =
+        if is_binary(conn_id),
+          do: {{:schema_cache, conn_id, :_, :_}, :_},
+          else: {{:schema_cache, :_, :_, :_}, :_}
+
+      col_pattern =
+        if is_binary(conn_id),
+          do: {{:columns_cache, conn_id, :_, :_}, :_},
+          else: {{:columns_cache, :_, :_, :_}, :_}
+
+      from_schema =
+        :ets.match_object(@table_name, schema_pattern)
+        |> Enum.reduce(%{}, fn {{:schema_cache, _cid, _schema, table_name}, schema_info}, acc ->
+          cols =
+            schema_info
+            |> Map.get(:rows, [])
+            |> Enum.map(fn
+              [col | _] when is_binary(col) -> col
+              _ -> nil
+            end)
+            |> Enum.reject(&(&1 in [nil, ""]))
+
+          if cols != [] do
+            Map.update(acc, table_name, cols, &Enum.uniq(&1 ++ cols))
+          else
+            acc
+          end
+        end)
+
+      :ets.match_object(@table_name, col_pattern)
+      |> Enum.reduce(from_schema, fn {{:columns_cache, _cid, _schema, table_name}, cols}, acc ->
+        clean_cols = Enum.filter(cols, &(is_binary(&1) and &1 != ""))
+
+        if clean_cols != [] do
+          Map.update(acc, table_name, clean_cols, &Enum.uniq(&1 ++ clean_cols))
+        else
+          acc
+        end
+      end)
+    else
+      %{}
     end
   end
 

@@ -239,7 +239,7 @@ defmodule Strata.UI.Components.Sidebar do
             app
         end
 
-      k when k in [:enter, :space, " ", "r", "R"] ->
+      k when k in [:enter, :space, " "] ->
         selected_item = Enum.find(visible, &(&1.id == sel_id))
 
         if selected_item && selected_item.type in [:table, :view] do
@@ -247,6 +247,9 @@ defmodule Strata.UI.Components.Sidebar do
         else
           toggle_node_expanded(app, sel_id)
         end
+
+      k when k in ["r", "R", :f5] ->
+        Strata.UI.App.refresh_sidebar_selection(app)
 
       k when k in ["c", "C"] ->
         collapse_all_nodes(app)
@@ -272,7 +275,7 @@ defmodule Strata.UI.Components.Sidebar do
       k when k in ["d", "D"] ->
         delete_selected_connection(app)
 
-      "S" ->
+      k when k in ["s", "S"] ->
         Strata.UI.App.push_modal(app, Strata.UI.Components.SSHModal.new())
 
       "/" ->
@@ -392,64 +395,7 @@ defmodule Strata.UI.Components.Sidebar do
   otherwise queries the persistent connection worker and caches the result.
   """
   def load_table_data(app, table_name, opts \\ []) do
-    {profile, schema} = resolve_selection_context(app)
-    bypass_cache? = Keyword.get(opts, :refresh, false)
-
-    {columns, rows, status_msg, has_more} =
-      if profile do
-        cached =
-          if bypass_cache? do
-            :miss
-          else
-            Strata.DataStore.get_table_cache(profile.id, schema, table_name)
-          end
-
-        case cached do
-          {:ok, entry} ->
-            {entry.columns, entry.rows,
-             "[Cache] Loaded table '#{table_name}' (#{length(entry.rows)} rows)", entry.has_more}
-
-          :miss ->
-            case fetch_table_chunk(profile, table_name, 0, 100, schema: schema) do
-              {:ok, cols, data_rows} ->
-                has_more = length(data_rows) == 100
-
-                Strata.DataStore.put_table_cache(
-                  profile.id,
-                  schema,
-                  table_name,
-                  cols,
-                  data_rows,
-                  has_more
-                )
-
-                {cols, data_rows, "[DB] Loaded table '#{table_name}' (#{length(data_rows)} rows)",
-                 has_more}
-
-              {:error, reason} ->
-                msg = if is_binary(reason), do: reason, else: inspect(reason)
-                {["error"], [[msg]], "Error loading table '#{table_name}': #{msg}", false}
-            end
-        end
-      else
-        {["info"], [["No database connection configured"]], "No database connection configured",
-         false}
-      end
-
-    grid =
-      Strata.UI.Components.DataGrid.new(columns, rows,
-        batch_size: 100,
-        has_more: has_more,
-        loading_more: false
-      )
-
-    app
-    |> Strata.UI.App.switch_view(:table_view)
-    |> Strata.UI.App.set_focus(:datagrid)
-    |> Map.put(:selected_table, table_name)
-    |> Map.put(:selected_schema, schema)
-    |> Map.put(:datagrid_state, grid)
-    |> Map.put(:status_message, status_msg)
+    Strata.UI.App.load_table_async(app, table_name, opts)
   end
 
   @doc """
@@ -615,32 +561,6 @@ defmodule Strata.UI.Components.Sidebar do
     }
   end
 
-  @doc """
-  Renders tree view state into structured render map for the sidebar area.
-  """
-  def render(app, area) do
-    visible = visible_nodes(app)
-    selected_idx = Enum.find_index(visible, &(&1.id == app.selected_tree_node_id)) || 0
-    statuses = Map.get(app, :connection_statuses, %{})
-    active_table = Map.get(app, :selected_table)
-    active_schema = Map.get(app, :selected_schema)
-
-    {items, styled_items} =
-      visible
-      |> Enum.map(&format_sidebar_item(&1, statuses, active_table, active_schema))
-      |> Enum.unzip()
-
-    %{
-      title: sidebar_title(app),
-      area: area,
-      items: items,
-      lines: items,
-      styled_items: styled_items,
-      selected_index: selected_idx,
-      selected_id: app.selected_tree_node_id
-    }
-  end
-
   defp sidebar_title(app) do
     filter = Map.get(app, :sidebar_filter, "") || ""
     filter_active? = Map.get(app, :sidebar_filter_active, false)
@@ -672,8 +592,6 @@ defmodule Strata.UI.Components.Sidebar do
     active_table? =
       item.type in [:table, :view] and is_binary(active_table) and item.label == active_table and
         (is_nil(active_schema) or is_nil(item[:schema]) or item[:schema] == active_schema)
-
-    active_mark = if active_table?, do: " ★", else: ""
 
     {glyph, glyph_style, label_style} =
       case item.type do
@@ -713,7 +631,7 @@ defmodule Strata.UI.Components.Sidebar do
           {type_icon(item.type, item.expanded?, item.has_children?), %Style{}, %Style{}}
       end
 
-    plain = "#{indent}#{glyph} #{item.label}#{count_suffix}#{active_mark}"
+    plain = "#{indent}#{glyph} #{item.label}#{count_suffix}"
 
     spans =
       [
@@ -722,10 +640,6 @@ defmodule Strata.UI.Components.Sidebar do
       ] ++
         if(count_suffix != "",
           do: [Span.new(count_suffix, style: %Style{fg: :dark_gray})],
-          else: []
-        ) ++
-        if(active_mark != "",
-          do: [Span.new(active_mark, style: %Style{fg: :yellow, modifiers: [:bold]})],
           else: []
         )
 

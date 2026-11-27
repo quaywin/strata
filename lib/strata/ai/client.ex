@@ -12,7 +12,8 @@ defmodule Strata.AI.Client do
           sql: String.t(),
           is_read_only: boolean(),
           explanation: String.t(),
-          session_id: String.t() | nil
+          session_id: String.t() | nil,
+          provider: atom()
         }
 
   @doc """
@@ -22,9 +23,10 @@ defmodule Strata.AI.Client do
           {:ok, sql_result()} | {:error, String.t()}
   def generate_sql(%AISettings{} = settings, context, user_request, opts \\ []) do
     prompt = Prompts.build_sql_prompt(context, user_request)
+    provider = AISettings.normalize_provider(settings.provider)
 
     with {:ok, payload, session_id} <- run_task(settings, :sql, prompt, opts) do
-      {:ok, normalize_sql_payload(payload, session_id)}
+      {:ok, normalize_sql_payload(payload, session_id, provider)}
     end
   end
 
@@ -412,7 +414,7 @@ defmodule Strata.AI.Client do
 
   defp normalize_session_id(_), do: nil
 
-  defp normalize_sql_payload(payload, session_id) do
+  defp normalize_sql_payload(payload, session_id, provider) do
     sql =
       payload
       |> Map.get("sql", "")
@@ -430,7 +432,8 @@ defmodule Strata.AI.Client do
       sql: sql,
       is_read_only: is_read_only,
       explanation: to_string(Map.get(payload, "explanation") || "AI SQL generated"),
-      session_id: session_id
+      session_id: session_id,
+      provider: provider
     }
   end
 

@@ -186,6 +186,7 @@ defmodule Strata.AIClientTest do
       assert claude_sql.sql == "SELECT * FROM users WHERE status = 'active';"
       assert claude_sql.is_read_only == true
       assert claude_sql.session_id == "claude-sess-42"
+      assert claude_sql.provider == :claude
 
       agy_raw =
         Jason.encode!(%{
@@ -207,6 +208,7 @@ defmodule Strata.AIClientTest do
       assert sql_res.sql == "DELETE FROM users WHERE id = 1;"
       assert sql_res.is_read_only == false
       assert sql_res.session_id == "agy-conv-99"
+      assert sql_res.provider == :agy
 
       codex_jsonl =
         [

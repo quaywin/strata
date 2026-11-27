@@ -376,6 +376,7 @@ defmodule Strata.UI.App do
       old_state.selected_tree_node_id != new_state.selected_tree_node_id or
       old_state.inspector_value_scroll != new_state.inspector_value_scroll or
       old_state.inspector_summary_scroll != new_state.inspector_summary_scroll or
+      old_state.ai_history_scroll != new_state.ai_history_scroll or
       old_state.filter_dropdown_idx != new_state.filter_dropdown_idx or
       old_state.status_message != new_state.status_message or
       old_state.modals != new_state.modals
@@ -1371,9 +1372,10 @@ defmodule Strata.UI.App do
 
   def handle_info({:ai_task_finished, req_id, :sql, tab_id, msg_id, res}, state) do
     case state.ai_request do
-      %{id: ^req_id} ->
+      %{id: ^req_id} = req ->
+        req_provider = Map.get(req, :provider)
         state = %{state | ai_request: nil} |> cancel_throbber_timer()
-        {:noreply, apply_ai_task_result(state, tab_id, msg_id, res)}
+        {:noreply, apply_ai_task_result(state, tab_id, msg_id, res, req_provider)}
 
       _ ->
         {:noreply, state, render?: false}
@@ -2426,6 +2428,7 @@ defmodule Strata.UI.App do
         update_tab_by_id(app, app.active_tab_id, fn t ->
           Map.merge(t, %{
             ai_session_id: nil,
+            ai_session_provider: nil,
             ai_messages: [],
             ai_applied_msg_id: nil
           })
@@ -2450,7 +2453,8 @@ defmodule Strata.UI.App do
     context = Strata.AI.ContextBuilder.build(app, settings)
     tab = active_tab(app)
     tab_id = tab && tab.id
-    session_id = tab && Map.get(tab, :ai_session_id)
+    current_provider = Strata.AISettings.normalize_provider(settings.provider)
+    session_id = matching_tab_session_id(tab, current_provider)
     msg_id = "ai_" <> Integer.to_string(System.unique_integer([:positive]))
     ai_prompt = Keyword.get(opts, :expanded_prompt, display_prompt)
 
@@ -2492,12 +2496,45 @@ defmodule Strata.UI.App do
 
     %{
       app
-      | ai_request: %{id: req_id, pid: pid, tab_id: tab_id, msg_id: msg_id},
+      | ai_request: %{
+          id: req_id,
+          pid: pid,
+          tab_id: tab_id,
+          msg_id: msg_id,
+          provider: current_provider
+        },
         ai_selected_msg_idx: new_sel_idx,
         status_message: "⏳ Asking #{provider_name} AI..."
     }
     |> sync_ai_panel_scroll_to_bottom()
     |> start_throbber_timer()
+  end
+
+  @doc false
+  def matching_tab_session_id(nil, _current_provider), do: nil
+
+  def matching_tab_session_id(tab, current_provider) do
+    stored_provider = normalize_optional_provider(Map.get(tab, :ai_session_provider))
+
+    if stored_provider == current_provider do
+      Map.get(tab, :ai_session_id)
+    else
+      nil
+    end
+  end
+
+  defp normalize_optional_provider(p) when p in [:claude, :codex, :agy], do: p
+  defp normalize_optional_provider("claude"), do: :claude
+  defp normalize_optional_provider("codex"), do: :codex
+  defp normalize_optional_provider("agy"), do: :agy
+  defp normalize_optional_provider(_), do: nil
+
+  defp current_ai_provider do
+    try do
+      Strata.AISettings.normalize_provider(Strata.AISettingsStore.get().provider)
+    catch
+      _, _ -> :claude
+    end
   end
 
   defp cancel_ai_request(
@@ -2532,7 +2569,7 @@ defmodule Strata.UI.App do
 
   defp cancel_ai_request(app), do: app
 
-  defp apply_ai_task_result(app, tab_id, msg_id, {:error, msg}) do
+  defp apply_ai_task_result(app, tab_id, msg_id, {:error, msg}, _req_provider) do
     err_text = Strata.Formatter.format_error(msg)
 
     app =
@@ -2560,9 +2597,14 @@ defmodule Strata.UI.App do
     |> sync_ai_panel_scroll_to_bottom()
   end
 
-  defp apply_ai_task_result(app, tab_id, msg_id, {:ok, res}) do
+  defp apply_ai_task_result(app, tab_id, msg_id, {:ok, res}, req_provider) do
     sql = to_string(res.sql || "")
-    session_id = res.session_id
+    session_id = Map.get(res, :session_id)
+
+    result_provider =
+      normalize_optional_provider(Map.get(res, :provider)) ||
+        normalize_optional_provider(req_provider) ||
+        current_ai_provider()
 
     target_id =
       cond do
@@ -2596,13 +2638,21 @@ defmodule Strata.UI.App do
               end
             end)
 
+          next_session_id =
+            if normalize_optional_provider(Map.get(t, :ai_session_provider)) == result_provider do
+              session_id || Map.get(t, :ai_session_id)
+            else
+              session_id
+            end
+
           %{
             t
             | content: sql,
               cursor: {0, 0},
               scroll_offset: 0,
               diagnostics: [],
-              ai_session_id: session_id || Map.get(t, :ai_session_id),
+              ai_session_id: next_session_id,
+              ai_session_provider: result_provider,
               ai_applied_msg_id: msg_id,
               ai_messages: msgs,
               last_query_error: nil
@@ -2613,7 +2663,12 @@ defmodule Strata.UI.App do
 
         if opened.active_tab_id do
           update_tab_by_id(opened, opened.active_tab_id, fn t ->
-            %{t | ai_session_id: session_id, ai_applied_msg_id: msg_id}
+            %{
+              t
+              | ai_session_id: session_id,
+                ai_session_provider: result_provider,
+                ai_applied_msg_id: msg_id
+            }
           end)
         else
           opened
@@ -2644,7 +2699,7 @@ defmodule Strata.UI.App do
 
     case Map.get(areas, :ai_panel) do
       %{} = ai_area ->
-        %{history_area: hist_area} = AIChatPanel.areas(ai_area)
+        %{history_area: hist_area} = AIChatPanel.areas(ai_area, input_text: app.ai_input_text)
         tab = active_tab(app)
         data = AIChatPanel.history_data(app, tab, hist_area)
         msgs = (tab && Map.get(tab, :ai_messages, [])) || []
@@ -2674,6 +2729,7 @@ defmodule Strata.UI.App do
                 content: t.content,
                 cursor: t.cursor,
                 ai_session_id: t.ai_session_id,
+                ai_session_provider: Map.get(t, :ai_session_provider),
                 ai_applied_msg_id: t.ai_applied_msg_id,
                 ai_messages: t.ai_messages
               )
@@ -2770,6 +2826,7 @@ defmodule Strata.UI.App do
         content: Map.get(closed_tab, :content, ""),
         cursor: Map.get(closed_tab, :cursor, {0, 0}),
         ai_session_id: Map.get(closed_tab, :ai_session_id),
+        ai_session_provider: Map.get(closed_tab, :ai_session_provider),
         ai_applied_msg_id: Map.get(closed_tab, :ai_applied_msg_id),
         ai_messages: ai_messages
       )
@@ -4516,6 +4573,7 @@ defmodule Strata.UI.App do
         profile_id: Keyword.get(tab_opts, :profile_id, current_profile_id(app)),
         cursor: Keyword.get(tab_opts, :cursor, {0, 0}),
         ai_session_id: Keyword.get(tab_opts, :ai_session_id),
+        ai_session_provider: Keyword.get(tab_opts, :ai_session_provider),
         ai_applied_msg_id: Keyword.get(tab_opts, :ai_applied_msg_id),
         ai_messages: Keyword.get(tab_opts, :ai_messages, [])
       )
@@ -4977,6 +5035,7 @@ defmodule Strata.UI.App do
       executed_sql: Keyword.get(opts, :executed_sql),
       query_request_id: Keyword.get(opts, :query_request_id),
       ai_session_id: Keyword.get(opts, :ai_session_id),
+      ai_session_provider: Keyword.get(opts, :ai_session_provider),
       ai_applied_msg_id: Keyword.get(opts, :ai_applied_msg_id),
       ai_messages: Keyword.get(opts, :ai_messages, []),
       last_query_error: Keyword.get(opts, :last_query_error),
@@ -5716,6 +5775,12 @@ defmodule Strata.UI.App do
         :end ->
           scroll_to_ai_turn(%{app | ai_selected_msg_idx: max_idx}, max_idx)
 
+        :page_up ->
+          page_scroll_ai_history(app, -1)
+
+        :page_down ->
+          page_scroll_ai_history(app, 1)
+
         k when k in [:enter, :space] ->
           apply_ai_history_turn(app, curr_idx)
 
@@ -5769,6 +5834,12 @@ defmodule Strata.UI.App do
 
       :end ->
         %{app | ai_input_cursor: String.length(app.ai_input_text || "")}
+
+      :page_up ->
+        page_scroll_ai_history(app, -1)
+
+      :page_down ->
+        page_scroll_ai_history(app, 1)
 
       k when k in [{:ctrl, "u"}, {:ctrl, "k"}] ->
         %{app | ai_input_text: "", ai_input_cursor: 0, ai_pastes: %{}, ai_paste_seq: 0}
@@ -5836,7 +5907,7 @@ defmodule Strata.UI.App do
 
     case Map.get(areas, :ai_panel) do
       %{} = ai_area ->
-        %{history_area: hist_area} = AIChatPanel.areas(ai_area)
+        %{history_area: hist_area} = AIChatPanel.areas(ai_area, input_text: app.ai_input_text)
         tab = active_tab(app)
         data = AIChatPanel.history_data(app, tab, hist_area)
 
@@ -6302,6 +6373,20 @@ defmodule Strata.UI.App do
   end
 
   defp cancel_inline_edit_if_active(app), do: app
+
+  defp page_scroll_ai_history(app, direction) do
+    areas = Renderer.layout_for(app)
+
+    case Map.get(areas, :ai_panel) do
+      %{} = ai_area ->
+        %{history_area: hist_area} = AIChatPanel.areas(ai_area, input_text: app.ai_input_text)
+        step = max(1, div(max(1, hist_area.height - 2), 2))
+        scroll_ai_history(app, ai_area, direction * step)
+
+      nil ->
+        app
+    end
+  end
 
   defp scroll_ai_history(app, ai_area, delta) do
     %{history_area: hist_area} = AIChatPanel.areas(ai_area, input_text: app.ai_input_text)

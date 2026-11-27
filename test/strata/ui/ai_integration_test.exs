@@ -246,11 +246,12 @@ defmodule Strata.UI.AIIntegrationTest do
       assert closed.ai_panel_open == false
       assert closed.focus == :editor
 
-      # Ctrl+L resets conversation (clears ai_messages & ai_session_id)
+      # Ctrl+L resets conversation (clears ai_messages, ai_session_id & ai_session_provider)
       reset_app = App.handle_key(picked_turn1, {:ctrl, "l"})
       reset_tab = Enum.find(reset_app.tabs, &(&1.id == tab_id))
       assert reset_tab.ai_messages == []
       assert reset_tab.ai_session_id == nil
+      assert reset_tab.ai_session_provider == nil
 
       # Long multi-line SQL in conversation is wrapped cleanly without truncation
       long_sql =
@@ -518,6 +519,171 @@ defmodule Strata.UI.AIIntegrationTest do
       {:noreply, ime} = App.handle_event(%Key{code: "tiếng Việt", kind: "press"}, app)
       assert ime.ai_input_text == "tiếng Việt"
       assert ime.ai_input_cursor == 10
+    end
+
+    test "mouse wheel scroll and PageUp/PageDown re-render and scroll AI chat conversation" do
+      alias ExRatatui.Event.{Key, Mouse}
+
+      turns =
+        Enum.map(1..6, fn i ->
+          %{
+            id: "m_#{i}",
+            prompt: "List records for table number #{i} with details",
+            sql: "SELECT * FROM table_#{i} ORDER BY id DESC LIMIT 20;",
+            is_read_only: true,
+            explanation: "Queries recent rows from table_#{i}",
+            error: nil,
+            status: :done
+          }
+        end)
+
+      tab = %{
+        id: "tab_1",
+        kind: :query,
+        name: "Query 1",
+        profile_id: nil,
+        content: "",
+        cursor: {0, 0},
+        ai_messages: turns
+      }
+
+      app =
+        App.new(
+          window_size: {120, 30},
+          tabs: [tab],
+          active_tab_id: "tab_1",
+          active_view: :query_view,
+          ai_panel_open: true,
+          focus: :ai_panel
+        )
+
+      layout = Renderer.layout_for(app)
+      ai_area = layout.ai_panel
+      %{history_area: hist_area} = AIChatPanel.areas(ai_area)
+      data = AIChatPanel.history_data(app, tab, hist_area)
+      assert data.max_scroll > 0
+
+      at_bottom = %{app | ai_history_scroll: data.max_scroll}
+
+      # Mouse scroll_up inside AI panel must trigger render?: true and decrease ai_history_scroll
+      {:noreply, scrolled_up, opts_up} =
+        App.handle_event(
+          %Mouse{kind: "scroll_up", x: ai_area.x + 2, y: ai_area.y + 2},
+          at_bottom
+        )
+
+      assert Keyword.get(opts_up, :render?) == true
+      assert scrolled_up.ai_history_scroll < at_bottom.ai_history_scroll
+
+      # PageUp / PageDown also scroll history from :input focus
+      {:noreply, paged_up} = App.handle_event(%Key{code: "page_up", kind: "press"}, at_bottom)
+      assert paged_up.ai_history_scroll < at_bottom.ai_history_scroll
+
+      {:noreply, paged_down} = App.handle_event(%Key{code: "page_down", kind: "press"}, paged_up)
+      assert paged_down.ai_history_scroll > paged_up.ai_history_scroll
+    end
+
+    test "ignores stale AI session_id when switching agents (e.g. agy -> claude)" do
+      app = App.new(window_size: {120, 40}) |> App.open_tab(name: "Query 1", content: "")
+      tab_id = app.active_tab_id
+
+      # 1. Agy turn stores agy session_id and ai_session_provider == :agy
+      req_agy = make_ref()
+
+      pending_agy = %{
+        app
+        | ai_request: %{id: req_agy, pid: self(), tab_id: tab_id, msg_id: "m1", provider: :agy}
+      }
+
+      {:noreply, after_agy} =
+        App.handle_info(
+          {:ai_task_finished, req_agy, :sql, tab_id, "m1",
+           {:ok,
+            %{
+              sql: "SELECT 1;",
+              is_read_only: true,
+              explanation: "Agy result",
+              session_id: "agy-conv-123",
+              provider: :agy
+            }}},
+          pending_agy
+        )
+
+      tab_agy = Enum.find(after_agy.tabs, &(&1.id == tab_id))
+      assert tab_agy.ai_session_id == "agy-conv-123"
+      assert tab_agy.ai_session_provider == :agy
+
+      # Same provider reuses session_id; switching to :claude or :codex omits it
+      assert App.matching_tab_session_id(tab_agy, :agy) == "agy-conv-123"
+      assert App.matching_tab_session_id(tab_agy, :claude) == nil
+      assert App.matching_tab_session_id(tab_agy, :codex) == nil
+      assert App.matching_tab_session_id(%{tab_agy | ai_session_provider: nil}, :claude) == nil
+
+      # 2. Switching to :claude with session_id: nil clears old :agy session instead of keeping it
+      req_claude_nil = make_ref()
+
+      pending_claude_nil = %{
+        after_agy
+        | ai_request: %{
+            id: req_claude_nil,
+            pid: self(),
+            tab_id: tab_id,
+            msg_id: "m2",
+            provider: :claude
+          }
+      }
+
+      {:noreply, after_claude_nil} =
+        App.handle_info(
+          {:ai_task_finished, req_claude_nil, :sql, tab_id, "m2",
+           {:ok,
+            %{
+              sql: "SELECT 2;",
+              is_read_only: true,
+              explanation: "Claude fresh",
+              session_id: nil,
+              provider: :claude
+            }}},
+          pending_claude_nil
+        )
+
+      tab_claude_nil = Enum.find(after_claude_nil.tabs, &(&1.id == tab_id))
+      assert tab_claude_nil.ai_session_id == nil
+      assert tab_claude_nil.ai_session_provider == :claude
+
+      # 3. Claude turn returning new session_id binds :claude session cleanly
+      req_claude = make_ref()
+
+      pending_claude = %{
+        after_claude_nil
+        | ai_request: %{
+            id: req_claude,
+            pid: self(),
+            tab_id: tab_id,
+            msg_id: "m3",
+            provider: :claude
+          }
+      }
+
+      {:noreply, after_claude} =
+        App.handle_info(
+          {:ai_task_finished, req_claude, :sql, tab_id, "m3",
+           {:ok,
+            %{
+              sql: "SELECT 3;",
+              is_read_only: true,
+              explanation: "Claude session",
+              session_id: "claude-sess-99",
+              provider: :claude
+            }}},
+          pending_claude
+        )
+
+      tab_claude = Enum.find(after_claude.tabs, &(&1.id == tab_id))
+      assert tab_claude.ai_session_id == "claude-sess-99"
+      assert tab_claude.ai_session_provider == :claude
+      assert App.matching_tab_session_id(tab_claude, :claude) == "claude-sess-99"
+      assert App.matching_tab_session_id(tab_claude, :agy) == nil
     end
   end
 end

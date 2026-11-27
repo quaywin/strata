@@ -306,6 +306,7 @@ defmodule Strata.WorkspaceStore do
       content: to_string(Map.get(tab, :content) || ""),
       cursor: {cur_r, cur_c},
       ai_session_id: Map.get(tab, :ai_session_id),
+      ai_session_provider: normalize_session_provider(Map.get(tab, :ai_session_provider)),
       ai_applied_msg_id: Map.get(tab, :ai_applied_msg_id),
       ai_messages: ai_messages
     }
@@ -326,6 +327,12 @@ defmodule Strata.WorkspaceStore do
   defp normalize_msg_status(:error), do: :error
   defp normalize_msg_status("error"), do: :error
   defp normalize_msg_status(_), do: :done
+
+  defp normalize_session_provider(p) when p in [:claude, :codex, :agy], do: p
+  defp normalize_session_provider("claude"), do: :claude
+  defp normalize_session_provider("codex"), do: :codex
+  defp normalize_session_provider("agy"), do: :agy
+  defp normalize_session_provider(_), do: nil
 
   defp get_table_name(store) when is_atom(store), do: store
   defp get_table_name(store) when is_pid(store), do: GenServer.call(store, :get_table_name)
@@ -404,6 +411,7 @@ defmodule Strata.WorkspaceStore do
       content: to_string(Map.get(t, "content") || ""),
       cursor: cursor,
       ai_session_id: Map.get(t, "ai_session_id"),
+      ai_session_provider: normalize_session_provider(Map.get(t, "ai_session_provider")),
       ai_applied_msg_id: Map.get(t, "ai_applied_msg_id"),
       ai_messages: messages
     }
@@ -491,6 +499,11 @@ defmodule Strata.WorkspaceStore do
       "content" => t.content,
       "cursor" => [r, c],
       "ai_session_id" => t.ai_session_id,
+      "ai_session_provider" =>
+        case Map.get(t, :ai_session_provider) do
+          p when p in [:claude, :codex, :agy] -> Atom.to_string(p)
+          _ -> nil
+        end,
       "ai_applied_msg_id" => t.ai_applied_msg_id,
       "ai_messages" =>
         Enum.map(t.ai_messages, fn m ->

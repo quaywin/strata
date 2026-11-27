@@ -32,6 +32,7 @@ defmodule Strata.WorkspaceStoreTest do
           content: "SELECT * FROM orders LIMIT 10;",
           cursor: {0, 12},
           ai_session_id: "sess-abc",
+          ai_session_provider: :agy,
           ai_applied_msg_id: "m2",
           ai_messages: [
             %{
@@ -73,6 +74,7 @@ defmodule Strata.WorkspaceStoreTest do
       assert saved_q.content == "SELECT * FROM orders LIMIT 10;"
       assert saved_q.cursor == {0, 12}
       assert saved_q.ai_session_id == "sess-abc"
+      assert saved_q.ai_session_provider == :agy
       assert saved_q.ai_applied_msg_id == "m2"
       # Running turns are filtered out on save
       assert length(saved_q.ai_messages) == 2

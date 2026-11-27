@@ -662,5 +662,5 @@ defmodule Strata.Updater do
     do: "Could not connect to GitHub (check network)"
 
   defp format_error_reason(:timeout), do: "Request timed out"
-  defp format_error_reason(reason), do: inspect(reason)
+  defp format_error_reason(reason), do: Strata.Formatter.format_error(reason)
 end

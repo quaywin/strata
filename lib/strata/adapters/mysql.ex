@@ -16,19 +16,37 @@ defmodule Strata.Adapter.MySQL do
   def connect(%ConnectionProfile{} = profile, host, port) do
     _ = Application.ensure_all_started(:myxql)
 
-    my_opts =
-      [
-        hostname: host || "localhost",
-        port: port || default_port(),
-        username: profile.username || "root",
-        password: profile.password || "",
-        database: profile.database
-      ] ++ Map.to_list(profile.options || %{})
-
-    case MyXQL.start_link(my_opts) do
+    case MyXQL.start_link(mysql_opts(profile, host, port)) do
       {:ok, pid} -> {:ok, pid}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @impl true
+  def test_connection(%ConnectionProfile{} = profile, host, port) do
+    _ = Application.ensure_all_started(:myxql)
+    opts = Keyword.put_new(mysql_opts(profile, host, port), :disconnect_on_error_codes, [])
+
+    Strata.Adapter.run_isolated(fn ->
+      case MyXQL.Connection.connect(opts) do
+        {:ok, state} ->
+          _ = MyXQL.Connection.disconnect(:normal, state)
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end)
+  end
+
+  defp mysql_opts(%ConnectionProfile{} = profile, host, port) do
+    [
+      hostname: host || "localhost",
+      port: port || default_port(),
+      username: profile.username || "root",
+      password: profile.password || "",
+      database: profile.database
+    ] ++ Map.to_list(profile.options || %{})
   end
 
   @impl true

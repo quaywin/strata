@@ -66,7 +66,7 @@ defmodule Strata.UI.Components.ExportModal do
       when key in [:right, :space, :enter] do
     idx = Enum.find_index(@export_formats, &(&1 == modal.format)) || 0
     next_fmt = Enum.at(@export_formats, rem(idx + 1, length(@export_formats)))
-    %{modal | format: next_fmt, file_path: replace_extension(modal.file_path, next_fmt)}
+    apply_dropdown_selection(modal, :format, next_fmt)
   end
 
   def handle_key(%__MODULE__{focused_field: :format} = modal, :left) do
@@ -75,14 +75,24 @@ defmodule Strata.UI.Components.ExportModal do
     prev_fmt =
       Enum.at(@export_formats, rem(idx - 1 + length(@export_formats), length(@export_formats)))
 
-    %{modal | format: prev_fmt, file_path: replace_extension(modal.file_path, prev_fmt)}
+    apply_dropdown_selection(modal, :format, prev_fmt)
   end
 
   # Export Scope toggle
   def handle_key(%__MODULE__{focused_field: :scope} = modal, key)
       when key in [:space, :enter, :right, :left] do
     next_scope = if modal.scope == :all, do: :visible, else: :all
-    %{modal | scope: next_scope}
+    apply_dropdown_selection(modal, :scope, next_scope)
+  end
+
+  def handle_key(%__MODULE__{focused_field: field} = modal, :right)
+      when field in [:export_button, :cancel_button] do
+    handle_key(modal, :tab)
+  end
+
+  def handle_key(%__MODULE__{focused_field: field} = modal, :left)
+      when field in [:export_button, :cancel_button] do
+    handle_key(modal, :shift_tab)
   end
 
   # Action buttons & quick submit
@@ -240,9 +250,45 @@ defmodule Strata.UI.Components.ExportModal do
       fields: fields,
       status: modal.status,
       status_message:
-        modal.status_message || "Tips: ←/→ Format/Scope · Ctrl+V Paste path · Enter Export"
+        modal.status_message || "Tips: Enter Dropdown · ←/→ Cycle · Ctrl+V Paste · Enter Export"
     }
   end
+
+  @doc """
+  Returns dropdown options `[%{value, label, selected?}]` for a `:select` field.
+  """
+  @spec dropdown_options(t(), atom()) :: [map()]
+  def dropdown_options(%__MODULE__{} = modal, :format) do
+    Enum.map(@export_formats, fn fmt ->
+      ext = Atom.to_string(fmt)
+      %{value: fmt, label: "#{ext} (.#{ext})", selected?: fmt == modal.format}
+    end)
+  end
+
+  def dropdown_options(%__MODULE__{} = modal, :scope) do
+    [
+      %{value: :all, label: "all (All query rows)", selected?: modal.scope == :all},
+      %{value: :visible, label: "visible (Current page/view)", selected?: modal.scope == :visible}
+    ]
+  end
+
+  def dropdown_options(_modal, _field), do: []
+
+  @doc """
+  Applies a chosen dropdown value to a `:select` field.
+  """
+  @spec apply_dropdown_selection(t(), atom(), term()) :: t()
+  def apply_dropdown_selection(%__MODULE__{} = modal, :format, fmt)
+      when fmt in @export_formats do
+    %{modal | format: fmt, file_path: replace_extension(modal.file_path, fmt)}
+  end
+
+  def apply_dropdown_selection(%__MODULE__{} = modal, :scope, scope)
+      when scope in @export_scopes do
+    %{modal | scope: scope}
+  end
+
+  def apply_dropdown_selection(modal, _field, _value), do: modal
 
   defp replace_extension(file_path, format) do
     ext = Atom.to_string(format)

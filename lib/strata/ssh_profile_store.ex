@@ -44,7 +44,9 @@ defmodule Strata.SSHProfileStore do
     tab = get_table_name(store)
 
     try do
-      :ets.select(tab, [{{:_, :"$1"}, [], [:"$1"]}])
+      tab
+      |> :ets.select([{{:_, :"$1"}, [], [:"$1"]}])
+      |> Enum.sort_by(&String.downcase(to_string(&1.name || &1.id || "")))
     rescue
       _ -> []
     catch
@@ -71,44 +73,59 @@ defmodule Strata.SSHProfileStore do
   end
 
   @doc """
+  Imports non-wildcard host entries from `path` (default `~/.ssh/config`) into `store`
+  without overwriting profiles already saved in the store.
+  Returns `{:ok, imported_count}`.
+  """
+  @spec import_from_ssh_config(atom() | pid(), String.t()) :: {:ok, non_neg_integer()}
+  def import_from_ssh_config(store \\ __MODULE__, path \\ "~/.ssh/config") do
+    GenServer.call(store, {:import_ssh_config, path})
+  end
+
+  @doc """
   Parses SSH config formatted string into a list of SSHProfile structs.
   """
   @spec parse_ssh_config_string(String.t()) :: [SSHProfile.t()]
   def parse_ssh_config_string(content) when is_binary(content) do
-    content
-    |> String.split(["\r\n", "\n"])
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(String.starts_with?(&1, "#") or &1 == ""))
-    |> Enum.reduce({[], nil}, fn line, {acc, current} ->
-      case parse_line(line) do
-        {:host, name} ->
-          acc =
-            if current && not wildcard_host?(current.id) && current.host,
-              do: [finish_profile(current) | acc],
-              else: acc
+    {rev_blocks, current} =
+      content
+      |> String.split(["\r\n", "\n"])
+      |> Enum.map(&strip_comment_and_trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.reduce({[], nil}, fn line, {acc, current} ->
+        case parse_line(line) do
+          {:host, names} ->
+            acc = flush_block(current, acc)
 
-          {acc, %{id: name, name: name, host: nil, port: 22, username: nil, identity_file: nil}}
+            block = %{
+              names: names,
+              host: nil,
+              port: 22,
+              username: nil,
+              identity_file: nil
+            }
 
-        {:key_val, key, val} ->
-          if current do
-            updated = update_current(current, key, val)
-            {acc, updated}
-          else
+            {acc, block}
+
+          :match ->
+            {flush_block(current, acc), nil}
+
+          {:key_val, key, val} ->
+            if current do
+              {acc, update_current(current, key, val)}
+            else
+              {acc, current}
+            end
+
+          :unknown ->
             {acc, current}
-          end
+        end
+      end)
 
-        :unknown ->
-          {acc, current}
-      end
-    end)
-    |> then(fn {acc, current} ->
-      if current && not wildcard_host?(current.id) && current.host do
-        [finish_profile(current) | acc]
-      else
-        acc
-      end
-    end)
+    rev_blocks
+    |> then(&flush_block(current, &1))
     |> Enum.reverse()
+    |> Enum.flat_map(&expand_block_to_profiles/1)
   end
 
   # Server Callbacks
@@ -120,6 +137,11 @@ defmodule Strata.SSHProfileStore do
     tab_name = if name == __MODULE__, do: @table_name, else: name
     path = Keyword.get(opts, :config_path) || Strata.Config.ssh_config_path()
 
+    ssh_config_paths =
+      Keyword.get_lazy(opts, :ssh_config_paths, fn ->
+        if @env == :test, do: [], else: ["~/.ssh/config", "./.ssh/config"]
+      end)
+
     table =
       case :ets.info(tab_name) do
         :undefined ->
@@ -130,6 +152,7 @@ defmodule Strata.SSHProfileStore do
       end
 
     load_from_disk(table, path)
+    Enum.each(ssh_config_paths, &load_from_ssh_config(table, &1))
 
     {:ok, %{table: table, config_path: path, save_timer: nil}}
   end
@@ -146,6 +169,12 @@ defmodule Strata.SSHProfileStore do
     true = :ets.delete(state.table, id)
     new_state = save_async(state)
     {:reply, :ok, new_state}
+  end
+
+  @impl true
+  def handle_call({:import_ssh_config, path}, _from, state) do
+    count = load_from_ssh_config(state.table, path)
+    {:reply, {:ok, count}, state}
   end
 
   @impl true
@@ -252,7 +281,46 @@ defmodule Strata.SSHProfileStore do
     _ -> :error
   end
 
+  defp load_from_ssh_config(tab, path) when is_binary(path) do
+    path
+    |> discover_ssh_profiles()
+    |> Enum.reduce(0, fn profile, count ->
+      if :ets.insert_new(tab, {profile.id, profile}), do: count + 1, else: count
+    end)
+  end
+
   defp wildcard_host?(id), do: String.contains?(id, "*") or String.contains?(id, "?")
+
+  defp strip_comment_and_trim(line) do
+    trimmed = String.trim(line)
+
+    if String.starts_with?(trimmed, "#") do
+      ""
+    else
+      trimmed
+      |> String.split(~r/\s+#/, parts: 2)
+      |> hd()
+      |> String.trim()
+    end
+  end
+
+  defp flush_block(nil, acc), do: acc
+  defp flush_block(block, acc), do: [block | acc]
+
+  defp expand_block_to_profiles(block) do
+    block.names
+    |> Enum.reject(&(&1 == "" or wildcard_host?(&1)))
+    |> Enum.map(fn host_alias ->
+      %SSHProfile{
+        id: host_alias,
+        name: host_alias,
+        host: block.host || host_alias,
+        port: block.port,
+        username: block.username,
+        identity_file: block.identity_file
+      }
+    end)
+  end
 
   defp parse_line(line) do
     parts = String.split(line, ~r/\s+|=/, parts: 2)
@@ -260,11 +328,17 @@ defmodule Strata.SSHProfileStore do
     case parts do
       [key, val] ->
         key_down = String.downcase(key)
+        clean_val = String.trim(val)
 
-        if key_down == "host" do
-          {:host, String.trim(val)}
-        else
-          {:key_val, key_down, String.trim(val)}
+        cond do
+          key_down == "host" ->
+            {:host, String.split(clean_val, ~r/\s+/, trim: true)}
+
+          key_down == "match" ->
+            :match
+
+          true ->
+            {:key_val, key_down, clean_val}
         end
 
       _ ->
@@ -284,19 +358,11 @@ defmodule Strata.SSHProfileStore do
 
   defp update_current(current, "identityfile", val) do
     clean_val = String.replace(val, ~r/^"|"$/, "")
-    %{current | identity_file: clean_val}
+
+    if current.identity_file in [nil, ""],
+      do: %{current | identity_file: clean_val},
+      else: current
   end
 
   defp update_current(current, _key, _val), do: current
-
-  defp finish_profile(map) do
-    %SSHProfile{
-      id: map.id,
-      name: map.name,
-      host: map.host,
-      port: map.port,
-      username: map.username,
-      identity_file: map.identity_file
-    }
-  end
 end

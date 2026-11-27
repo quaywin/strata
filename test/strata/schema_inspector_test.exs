@@ -131,4 +131,17 @@ defmodule Strata.SchemaInspectorTest do
 
     assert SchemaInspector.connection_label(sq) == "Local · orders.sqlite (SQLite)"
   end
+
+  test "fetch_fallback_nodes formats exception structs cleanly instead of raw inspect" do
+    profile = %ConnectionProfile{id: "c_err", name: "PG", driver: :postgres}
+
+    err = %DBConnection.ConnectionError{
+      message: "tcp connect (127.0.0.1:5432): connection refused"
+    }
+
+    tree = SchemaInspector.fetch_fallback_nodes(profile, err)
+
+    assert [%{label: "(Offline: tcp connect (127.0.0.1:5432): connection refused)"}] =
+             tree.children
+  end
 end

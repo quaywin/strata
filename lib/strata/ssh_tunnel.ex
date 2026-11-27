@@ -129,11 +129,50 @@ defmodule Strata.SSHTunnel do
         opts
       end
 
+    expanded_id =
+      if is_binary(profile.identity_file) and profile.identity_file != "" do
+        Path.expand(profile.identity_file)
+      else
+        nil
+      end
+
+    default_ssh_dir = Path.expand("~/.ssh")
+
+    user_dir =
+      cond do
+        expanded_id && File.exists?(expanded_id) -> Path.dirname(expanded_id)
+        File.dir?(default_ssh_dir) -> default_ssh_dir
+        true -> nil
+      end
+
     opts =
-      if profile.identity_file && profile.identity_file != "" &&
-           File.exists?(profile.identity_file) do
-        dir = Path.dirname(profile.identity_file)
-        [{:user_dir, String.to_charlist(dir)} | opts]
+      if user_dir do
+        [{:user_dir, String.to_charlist(user_dir)} | opts]
+      else
+        opts
+      end
+
+    opts =
+      if profile.passphrase && profile.passphrase != "" do
+        pass_cl = String.to_charlist(profile.passphrase)
+
+        [
+          {:rsa_pass_phrase, pass_cl},
+          {:dsa_pass_phrase, pass_cl},
+          {:ecdsa_pass_phrase, pass_cl}
+          | opts
+        ]
+      else
+        opts
+      end
+
+    opts =
+      if expanded_id && File.exists?(expanded_id) do
+        [
+          {:key_cb,
+           {Strata.SSHKeyCallback, [identity_file: expanded_id, passphrase: profile.passphrase]}}
+          | opts
+        ]
       else
         opts
       end

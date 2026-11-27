@@ -133,6 +133,49 @@ defmodule Strata.UI.Components.ConnectionModalTest do
       assert modal.status == :error
       assert modal.status_message =~ "Access denied"
     end
+
+    test "formats DBConnection.ConnectionError, Postgrex.Error, MyXQL.Error, and SSH tunnel errors cleanly" do
+      modal = ConnectionModal.new(name: "PG DB")
+
+      db_err = %DBConnection.ConnectionError{
+        message: "tcp connect (127.0.0.1:5432): connection refused - :econnrefused"
+      }
+
+      pg_modal = ConnectionModal.test_connection(modal, fn _ -> {:error, db_err} end)
+      assert pg_modal.status == :error
+
+      assert pg_modal.status_message ==
+               "❌ Connection failed: tcp connect (127.0.0.1:5432): connection refused - :econnrefused"
+
+      refute pg_modal.status_message =~ "%DBConnection.ConnectionError"
+
+      pg_auth_err =
+        Postgrex.Error.exception(
+          postgres: %{
+            severity: "FATAL",
+            code: "28P01",
+            message: "password authentication failed for user \"postgres\""
+          }
+        )
+
+      auth_modal = ConnectionModal.apply_test_result(modal, {:error, pg_auth_err})
+      assert auth_modal.status == :error
+      assert auth_modal.status_message =~ "password authentication failed"
+      refute auth_modal.status_message =~ "%Postgrex.Error"
+
+      ssh_modal =
+        ConnectionModal.apply_test_result(modal, {:error, {:ssh_tunnel_failed, :econnrefused}})
+
+      assert ssh_modal.status == :error
+
+      assert ssh_modal.status_message ==
+               "❌ Connection failed: SSH tunnel failed: Connection refused (:econnrefused)"
+
+      sqlite_modal = ConnectionModal.apply_test_result(modal, {:error, :database_open_failed})
+
+      assert sqlite_modal.status_message ==
+               "❌ Connection failed: Failed to open SQLite database file"
+    end
   end
 
   describe "render/2" do
@@ -196,6 +239,96 @@ defmodule Strata.UI.Components.ConnectionModalTest do
       sqlite_modal = ConnectionModal.new() |> ConnectionModal.apply_uri("/var/data/strata.sqlite")
       assert sqlite_modal.driver == :sqlite
       assert sqlite_modal.database == "/var/data/strata.sqlite"
+    end
+
+    test "navigates horizontally across action buttons with left and right arrows" do
+      modal = ConnectionModal.new(focused_field: :test_button)
+      m2 = ConnectionModal.handle_key(modal, :right)
+      assert m2.focused_field == :save_button
+
+      m3 = ConnectionModal.handle_key(m2, :right)
+      assert m3.focused_field == :cancel_button
+
+      m4 = ConnectionModal.handle_key(m3, :left)
+      assert m4.focused_field == :save_button
+    end
+
+    test "supports cycling SSH tunnel between None, ~/.ssh/config profiles, and inline Manual SSH" do
+      modal = ConnectionModal.new(focused_field: :ssh_profile_id)
+      refute :ssh_host in ConnectionModal.visible_fields(modal)
+
+      # Cycle forward from :none -> :manual (2nd option)
+      manual_modal = ConnectionModal.handle_key(modal, :right)
+      assert manual_modal.ssh_mode == :manual
+      assert :ssh_host in ConnectionModal.visible_fields(manual_modal)
+      assert :ssh_identity_file in ConnectionModal.visible_fields(manual_modal)
+
+      # Type manual SSH details
+      filled =
+        manual_modal
+        |> ConnectionModal.handle_key(:tab)
+        |> ConnectionModal.handle_key("bastion.io")
+        |> ConnectionModal.handle_key(:tab)
+        |> ConnectionModal.handle_key(:backspace)
+        |> ConnectionModal.handle_key(:backspace)
+        |> ConnectionModal.handle_key("2222")
+        |> ConnectionModal.handle_key(:tab)
+        |> ConnectionModal.handle_key("deploy")
+        |> ConnectionModal.handle_key(:tab)
+        |> ConnectionModal.handle_key("pw")
+        |> ConnectionModal.handle_key(:tab)
+        |> ConnectionModal.handle_key("~/.ssh/id_ed25519")
+
+      prof = ConnectionModal.to_profile(filled)
+      assert prof.ssh_profile_id == nil
+
+      assert prof.ssh == %{
+               host: "bastion.io",
+               port: 2222,
+               username: "deploy",
+               password: "pw",
+               identity_file: "~/.ssh/id_ed25519"
+             }
+
+      # Re-opening from ConnectionProfile restores manual SSH mode and fields
+      reopened = ConnectionModal.new(profile: prof)
+      assert reopened.ssh_mode == :manual
+      assert reopened.ssh_host == "bastion.io"
+      assert reopened.ssh_port == 2222
+      assert reopened.ssh_username == "deploy"
+      assert reopened.ssh_password == "pw"
+      assert reopened.ssh_identity_file == "~/.ssh/id_ed25519"
+
+      # Cycling back to :none hides manual SSH fields cleanly
+      none_modal =
+        ConnectionModal.handle_key(%{reopened | focused_field: :ssh_profile_id}, :left)
+
+      assert none_modal.ssh_mode == :none
+      refute :ssh_host in ConnectionModal.visible_fields(none_modal)
+    end
+
+    test "exports dropdown_options and applies dropdown selection for :driver and :ssh_profile_id" do
+      modal = ConnectionModal.new()
+
+      driver_opts = ConnectionModal.dropdown_options(modal, :driver)
+      assert Enum.map(driver_opts, & &1.value) == [:postgres, :mysql, :sqlite]
+      assert Enum.find(driver_opts, & &1.selected?).value == :postgres
+
+      mysql_modal = ConnectionModal.apply_dropdown_selection(modal, :driver, :mysql)
+      assert mysql_modal.driver == :mysql
+      assert mysql_modal.port == 3306
+      assert mysql_modal.username == "root"
+
+      ssh_opts = ConnectionModal.dropdown_options(mysql_modal, :ssh_profile_id)
+      assert Enum.at(ssh_opts, 0).value == :none
+      assert Enum.at(ssh_opts, 0).selected?
+      assert Enum.at(ssh_opts, 1).value == :manual
+
+      manual_modal =
+        ConnectionModal.apply_dropdown_selection(mysql_modal, :ssh_profile_id, :manual)
+
+      assert manual_modal.ssh_mode == :manual
+      assert :ssh_host in ConnectionModal.visible_fields(manual_modal)
     end
   end
 end

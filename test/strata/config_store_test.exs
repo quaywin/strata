@@ -122,7 +122,136 @@ defmodule Strata.ConfigStoreTest do
 
     assert parsed.options == %{ssl: true}
 
+    # Inline manual SSH config round-trips cleanly through profile_to_map / profile_from_map
+    manual_prof = %ConnectionProfile{
+      id: "conn_manual_ssh",
+      name: "Manual SSH DB",
+      driver: :postgres,
+      host: "127.0.0.1",
+      port: 5432,
+      database: "prod",
+      username: "pg",
+      password: "pw",
+      ssh: %{
+        host: "bastion.example.com",
+        port: 2222,
+        username: "ops",
+        password: "secret",
+        identity_file: "~/.ssh/id_ed25519"
+      }
+    }
+
+    roundtrip = manual_prof |> ConfigStore.profile_to_map() |> ConfigStore.profile_from_map()
+    assert roundtrip.ssh == manual_prof.ssh
+    assert roundtrip.ssh_profile_id == nil
+
     GenServer.stop(cfg_pid2)
     GenServer.stop(ssh_pid2)
+  end
+
+  test "auto-discovers ~/.ssh/config into SSHProfileStore without overwriting saved overrides" do
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "strata_ssh_discover_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+    ssh_db_path = Path.join(tmp_dir, "ssh.db")
+    ssh_cfg_path = Path.join(tmp_dir, "ssh_config")
+
+    File.write!(ssh_cfg_path, """
+    # Global wildcard should be skipped
+    Host *
+      ServerAliveInterval 60
+
+    Host prod-bastion
+      HostName bastion.prod.internal
+      User deploy # inline comment
+      Port 2222
+      IdentityFile "~/.ssh/prod_ed25519"
+
+    Host db-direct.internal
+      User postgres
+
+    Host web-a web-b
+      HostName 10.20.0.5
+      User ubuntu
+
+    Match host *.internal exec "true"
+      User should_not_leak
+    """)
+
+    store_name = :"test_ssh_discover_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      SSHProfileStore.start_link(
+        name: store_name,
+        config_path: ssh_db_path,
+        ssh_config_paths: [ssh_cfg_path]
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    profiles = SSHProfileStore.list_profiles(store_name)
+    assert Enum.any?(profiles, &(&1.id == "prod-bastion"))
+    assert Enum.any?(profiles, &(&1.id == "db-direct.internal"))
+    assert Enum.any?(profiles, &(&1.id == "web-a"))
+    assert Enum.any?(profiles, &(&1.id == "web-b"))
+    refute Enum.any?(profiles, &(&1.id == "*"))
+
+    prod = SSHProfileStore.get_profile(store_name, "prod-bastion")
+    assert prod.host == "bastion.prod.internal"
+    assert prod.username == "deploy"
+    assert prod.port == 2222
+    assert prod.identity_file == "~/.ssh/prod_ed25519"
+
+    direct = SSHProfileStore.get_profile(store_name, "db-direct.internal")
+    assert direct.host == "db-direct.internal"
+    assert direct.username == "postgres"
+
+    web_b = SSHProfileStore.get_profile(store_name, "web-b")
+    assert web_b.host == "10.20.0.5"
+    assert web_b.username == "ubuntu"
+
+    # Saved overrides take precedence on reload
+    edited = %{prod | port: 2200, password: "secret"}
+    assert :ok = SSHProfileStore.put_profile(store_name, edited)
+    GenServer.stop(pid)
+
+    store_name_2 = :"test_ssh_discover_reload_#{System.unique_integer([:positive])}"
+
+    {:ok, pid2} =
+      SSHProfileStore.start_link(
+        name: store_name_2,
+        config_path: ssh_db_path,
+        ssh_config_paths: [ssh_cfg_path]
+      )
+
+    on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
+
+    reloaded = SSHProfileStore.get_profile(store_name_2, "prod-bastion")
+    assert reloaded.port == 2200
+    assert reloaded.password == "secret"
+  end
+
+  test "SSHKeyCallback loads explicit custom IdentityFile path" do
+    Application.ensure_all_started(:ssh)
+
+    tmp_key =
+      Path.join(System.tmp_dir!(), "strata_custom_key_#{System.unique_integer([:positive])}")
+
+    {_, 0} = System.cmd("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", tmp_key, "-q"])
+
+    on_exit(fn ->
+      File.rm(tmp_key)
+      File.rm(tmp_key <> ".pub")
+    end)
+
+    assert {:ok, key} =
+             Strata.SSHKeyCallback.user_key(:"ssh-ed25519",
+               key_cb_private: [identity_file: tmp_key]
+             )
+
+    assert elem(key, 0) == :ECPrivateKey
   end
 end

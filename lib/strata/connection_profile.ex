@@ -9,6 +9,7 @@ defmodule Strata.ConnectionProfile do
           username: String.t() | nil,
           password: String.t() | nil,
           ssh_profile_id: String.t() | nil,
+          ssh: map() | nil,
           options: map()
         }
 
@@ -22,6 +23,7 @@ defmodule Strata.ConnectionProfile do
     :username,
     :password,
     :ssh_profile_id,
+    :ssh,
     options: %{}
   ]
 end

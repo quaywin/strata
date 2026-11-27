@@ -130,7 +130,7 @@ defmodule Strata.UI.Components.UpdateModal do
   end
 
   def apply_check_result(%__MODULE__{} = modal, {:error, reason}) do
-    msg = if is_binary(reason), do: reason, else: inspect(reason)
+    msg = Strata.Formatter.format_error(reason)
     %{modal | status: :error, status_message: "❌ #{msg}", focused_field: :check_button}
   end
 
@@ -150,7 +150,7 @@ defmodule Strata.UI.Components.UpdateModal do
   end
 
   def apply_install_result(%__MODULE__{} = modal, {:error, reason}) do
-    msg = if is_binary(reason), do: reason, else: inspect(reason)
+    msg = Strata.Formatter.format_error(reason)
 
     %{
       modal
@@ -170,11 +170,11 @@ defmodule Strata.UI.Components.UpdateModal do
     {:cancel, modal}
   end
 
-  def handle_key(%__MODULE__{} = modal, key) when key in [:tab, :down] do
+  def handle_key(%__MODULE__{} = modal, key) when key in [:tab, :down, :right] do
     %{modal | focused_field: next_button(modal, 1)}
   end
 
-  def handle_key(%__MODULE__{} = modal, key) when key in [:shift_tab, :up] do
+  def handle_key(%__MODULE__{} = modal, key) when key in [:shift_tab, :up, :left] do
     %{modal | focused_field: next_button(modal, -1)}
   end
 

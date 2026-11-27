@@ -91,7 +91,7 @@ defmodule Strata.UI.Components.AISettingsModal do
     idx = Enum.find_index(providers, &(&1 == modal.provider)) || 0
     delta = if key == :left, do: -1, else: 1
     next_provider = Enum.at(providers, rem(idx + delta + length(providers), length(providers)))
-    %{modal | provider: next_provider, status: :idle, status_message: nil}
+    apply_dropdown_selection(modal, :provider, next_provider)
   end
 
   # Context scope cycling
@@ -102,18 +102,28 @@ defmodule Strata.UI.Components.AISettingsModal do
         do: :focused_only,
         else: :focused_and_related
 
-    %{modal | context_scope: next_scope}
+    apply_dropdown_selection(modal, :context_scope, next_scope)
   end
 
   # Keep conversation toggle
   def handle_key(%__MODULE__{focused_field: :keep_conversation} = modal, key)
       when key in [:right, :left, :space, :enter] do
-    %{modal | keep_conversation: not (modal.keep_conversation != false)}
+    apply_dropdown_selection(modal, :keep_conversation, not (modal.keep_conversation != false))
   end
 
   # Save shortcut & buttons
   def handle_key(%__MODULE__{} = modal, key) when key in [{:ctrl, "s"}, {:ctrl, "S"}] do
     {:save, modal}
+  end
+
+  def handle_key(%__MODULE__{focused_field: field} = modal, :right)
+      when field in [:test_button, :save_button, :cancel_button] do
+    handle_key(modal, :tab)
+  end
+
+  def handle_key(%__MODULE__{focused_field: field} = modal, :left)
+      when field in [:test_button, :save_button, :cancel_button] do
+    handle_key(modal, :shift_tab)
   end
 
   def handle_key(%__MODULE__{focused_field: :save_button} = modal, key)
@@ -171,20 +181,20 @@ defmodule Strata.UI.Components.AISettingsModal do
       %{
         label: "AI CLI Provider",
         key: :provider,
-        value: AISettings.provider_status_label(modal.provider) <> "  ←/→",
+        value: AISettings.provider_status_label(modal.provider),
         type: :select
       },
       %{label: "Model Override", key: :model, value: model_display, type: :text},
       %{
         label: "Schema Context",
         key: :context_scope,
-        value: AISettings.context_scope_label(modal.context_scope) <> "  ←/→",
+        value: AISettings.context_scope_label(modal.context_scope),
         type: :select
       },
       %{
         label: "Tab Conversation",
         key: :keep_conversation,
-        value: conv_label <> "  ←/→",
+        value: conv_label,
         type: :select
       },
       %{label: "[⚡ Test AI CLI]", key: :test_button, type: :button},
@@ -201,6 +211,61 @@ defmodule Strata.UI.Components.AISettingsModal do
       status_message: modal.status_message
     }
   end
+
+  @doc """
+  Returns dropdown options `[%{value, label, selected?}]` for a `:select` field.
+  """
+  @spec dropdown_options(t(), atom()) :: [map()]
+  def dropdown_options(%__MODULE__{} = modal, :provider) do
+    Enum.map(AISettings.providers(), fn p ->
+      %{value: p, label: AISettings.provider_status_label(p), selected?: p == modal.provider}
+    end)
+  end
+
+  def dropdown_options(%__MODULE__{} = modal, :context_scope) do
+    Enum.map([:focused_and_related, :focused_only], fn scope ->
+      %{
+        value: scope,
+        label: AISettings.context_scope_label(scope),
+        selected?: scope == modal.context_scope
+      }
+    end)
+  end
+
+  def dropdown_options(%__MODULE__{} = modal, :keep_conversation) do
+    keep? = modal.keep_conversation != false
+
+    [
+      %{value: true, label: "On (Resume per SQL tab)", selected?: keep?},
+      %{value: false, label: "Off", selected?: not keep?}
+    ]
+  end
+
+  def dropdown_options(_modal, _field), do: []
+
+  @doc """
+  Applies a chosen dropdown value to a `:select` field.
+  """
+  @spec apply_dropdown_selection(t(), atom(), term()) :: t()
+  def apply_dropdown_selection(%__MODULE__{} = modal, :provider, provider) do
+    if provider in AISettings.providers() do
+      %{modal | provider: provider, status: :idle, status_message: nil}
+    else
+      modal
+    end
+  end
+
+  def apply_dropdown_selection(%__MODULE__{} = modal, :context_scope, scope)
+      when scope in [:focused_and_related, :focused_only] do
+    %{modal | context_scope: scope}
+  end
+
+  def apply_dropdown_selection(%__MODULE__{} = modal, :keep_conversation, keep?)
+      when is_boolean(keep?) do
+    %{modal | keep_conversation: keep?}
+  end
+
+  def apply_dropdown_selection(modal, _field, _value), do: modal
 
   defp next_field(current, delta) do
     idx = Enum.find_index(@fields, &(&1 == current)) || 0

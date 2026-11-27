@@ -244,7 +244,7 @@ defmodule Strata.SchemaInspector do
         :econnrefused -> "(Offline: Connection refused on #{profile.host}:#{profile.port})"
         :timeout -> "(Offline: Connection timeout)"
         msg when is_binary(msg) -> "(Offline: #{msg})"
-        other -> "(Offline: #{inspect(other)})"
+        other -> "(Offline: #{Strata.Formatter.format_error(other)})"
       end
 
     %{

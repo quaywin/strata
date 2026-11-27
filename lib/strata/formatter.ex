@@ -442,4 +442,129 @@ defmodule Strata.Formatter do
       "#{String.pad_trailing(hex, 48)}  |#{ascii}|"
     end)
   end
+
+  @doc """
+  Formats an error reason (string, exception struct, tagged tuple, exit reason, or term)
+  into a concise, human-readable string suitable for TUI status and modal display.
+  """
+  @spec format_error(term()) :: String.t()
+  def format_error(reason) when is_binary(reason), do: String.trim(reason)
+
+  def format_error({:ssh_tunnel_failed, inner}) do
+    "SSH tunnel failed: " <> format_error(inner)
+  end
+
+  def format_error({tag, inner}) when tag in [:error, :exit, :throw] do
+    format_error(inner)
+  end
+
+  def format_error({reason, stack}) when is_list(stack) and is_exception(reason) do
+    format_error(reason)
+  end
+
+  def format_error(%_{} = struct) when is_exception(struct) do
+    struct
+    |> Exception.message()
+    |> to_string()
+    |> String.trim()
+  end
+
+  def format_error(%{message: msg}) when is_binary(msg) do
+    String.trim(msg)
+  end
+
+  def format_error(reason) when is_list(reason) do
+    if :io_lib.printable_unicode_list(reason) do
+      reason |> List.to_string() |> String.trim()
+    else
+      inspect(reason)
+    end
+  end
+
+  def format_error(:database_open_failed), do: "Failed to open SQLite database file"
+  def format_error(:timeout), do: "Connection timed out"
+  def format_error(:econnrefused), do: "Connection refused (:econnrefused)"
+  def format_error(:nxdomain), do: "Host not found (:nxdomain)"
+  def format_error(:ehostunreach), do: "Host unreachable (:ehostunreach)"
+  def format_error(:enetunreach), do: "Network unreachable (:enetunreach)"
+  def format_error(:eacces), do: "Permission denied (:eacces)"
+  def format_error(:enoent), do: "No such file or directory (:enoent)"
+  def format_error(:closed), do: "Connection closed"
+
+  def format_error(reason) when is_atom(reason) do
+    case :file.format_error(reason) do
+      ~c"unknown POSIX error" -> Atom.to_string(reason)
+      msg -> "#{List.to_string(msg)} (:#{reason})"
+    end
+  end
+
+  def format_error(reason), do: inspect(reason)
+
+  @doc """
+  Word-wraps `text` (preserving explicit newlines) so each line fits within `max_width`
+  graphemes. Falls back to grapheme chunking when a single token exceeds `max_width`.
+  """
+  @spec wrap_words(String.t(), pos_integer()) :: [String.t()]
+  def wrap_words("", _max_width), do: [""]
+
+  def wrap_words(text, max_width) when is_binary(text) do
+    w = max(4, max_width)
+
+    text
+    |> String.split(~r/\r?\n/)
+    |> Enum.flat_map(fn line ->
+      if line == "" do
+        [""]
+      else
+        wrap_line_words(line, w)
+      end
+    end)
+  end
+
+  defp wrap_line_words(line, width) do
+    if String.length(line) <= width do
+      [line]
+    else
+      tokens = Regex.scan(~r/\S+\s*|\s+/, line) |> List.flatten()
+
+      {rev_lines, current} =
+        Enum.reduce(tokens, {[], ""}, fn tok, {acc, curr} ->
+          cond do
+            String.length(curr <> tok) <= width ->
+              {acc, curr <> tok}
+
+            String.trim_trailing(tok) != "" and
+                String.length(curr <> String.trim_trailing(tok)) <= width ->
+              {[curr <> String.trim_trailing(tok) | acc], ""}
+
+            String.trim(curr) == "" ->
+              chunks = wrap_string(String.trim_leading(tok), width)
+              {Enum.reverse(Enum.drop(chunks, -1)) ++ acc, List.last(chunks) || ""}
+
+            true ->
+              clean_tok = String.trim_leading(tok)
+
+              if String.length(clean_tok) <= width do
+                {[String.trim_trailing(curr) | acc], clean_tok}
+              else
+                chunks = wrap_string(clean_tok, width)
+
+                {[String.trim_trailing(curr) | Enum.reverse(Enum.drop(chunks, -1)) ++ acc],
+                 List.last(chunks) || ""}
+              end
+          end
+        end)
+
+      final =
+        case String.trim_trailing(current) do
+          "" -> rev_lines
+          trimmed -> [trimmed | rev_lines]
+        end
+
+      case Enum.reverse(final) do
+        [] -> [""]
+        lines -> lines
+      end
+    end
+  end
 end

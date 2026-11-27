@@ -88,6 +88,19 @@ defmodule Strata.UI.Components.UpdateModalTest do
       assert done.status_message =~ "Updated to v0.1.10"
       assert done.focused_field == :close_button
     end
+
+    test "formats exception and POSIX errors cleanly on check/install failure" do
+      modal = UpdateModal.new(current_version: "0.1.9")
+
+      err = %RuntimeError{message: "GitHub API unavailable"}
+      failed_check = UpdateModal.apply_check_result(modal, {:error, err})
+      assert failed_check.status == :error
+      assert failed_check.status_message == "❌ GitHub API unavailable"
+
+      failed_install = UpdateModal.apply_install_result(modal, {:error, :eacces})
+      assert failed_install.status == :error
+      assert failed_install.status_message == "❌ Update failed: Permission denied (:eacces)"
+    end
   end
 
   describe "App and ActionsModal update integration" do

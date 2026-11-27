@@ -319,7 +319,7 @@ defmodule Strata.AI.Client do
             end
 
           {:error, reason} ->
-            {:error, to_string(reason)}
+            {:error, Strata.Formatter.format_error(reason)}
         end
       after
         Enum.each(Map.get(meta, :cleanup_files, []), &File.rm/1)

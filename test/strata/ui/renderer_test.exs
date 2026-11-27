@@ -79,8 +79,8 @@ defmodule Strata.UI.RendererTest do
 
       modals = [
         Strata.UI.Components.ConnectionModal.new(),
-        Strata.UI.Components.ExportModal.new(),
-        Strata.UI.Components.SSHModal.new()
+        Strata.UI.Components.ConnectionModal.new(ssh_mode: :manual, ssh_host: "bastion.internal"),
+        Strata.UI.Components.ExportModal.new()
       ]
 
       Enum.each(modals, fn modal ->
@@ -324,6 +324,152 @@ defmodule Strata.UI.RendererTest do
         |> Enum.reject(&is_nil/1)
 
       assert Enum.any?(q_titles, &(&1 =~ "QUERY RESULT GRID" and &1 =~ "scroll for more"))
+    end
+
+    test "wraps long ConnectionModal error status_message across multiple lines and draws cleanly" do
+      long_err =
+        "❌ Connection failed: tcp connect (db.internal.example.com:5432): " <>
+          "connection refused - :econnrefused while verifying TLS handshake and database 'production_analytics'"
+
+      cm =
+        Strata.UI.Components.ConnectionModal.new(
+          name: "Prod DB",
+          status: :error,
+          status_message: long_err
+        )
+
+      app = App.new(window_size: {120, 40}) |> App.push_modal(cm)
+      widgets = Renderer.render(app)
+      {modal_para, _rect} = List.last(widgets)
+
+      rendered_lines =
+        Enum.map(modal_para.text, fn line ->
+          Enum.map_join(line.spans, "", & &1.content)
+        end)
+
+      err_lines =
+        Enum.filter(
+          rendered_lines,
+          &(&1 =~ "Connection failed:" or &1 =~ "econnrefused" or &1 =~ "production_analytics")
+        )
+
+      assert length(err_lines) >= 2
+      assert Enum.join(rendered_lines, " ") =~ "production_analytics"
+
+      session = ExRatatui.CellSession.new(120, 40)
+      frame = %ExRatatui.Frame{width: 120, height: 40}
+      assert :ok == ExRatatui.CellSession.draw(session, App.render(app, frame))
+
+      # Very long multi-line error also expands modal height cleanly within terminal bounds
+      very_long_err = "❌ Connection failed: " <> String.duplicate("unreachable host detail ", 30)
+      tall_cm = %{cm | status_message: very_long_err}
+      tall_app = App.new(window_size: {120, 40}) |> App.push_modal(tall_cm)
+      tall_area = Renderer.modal_area_for(tall_app, {120, 40})
+      assert tall_area.height > 22
+      assert :ok == ExRatatui.CellSession.draw(session, App.render(tall_app, frame))
+    end
+
+    test "renders modal action buttons balanced horizontally on a single row across form modals" do
+      alias Strata.UI.Components.{
+        AISettingsModal,
+        ConnectionModal,
+        ExportModal,
+        UpdateModal
+      }
+
+      session = ExRatatui.CellSession.new(120, 40)
+      frame = %ExRatatui.Frame{width: 120, height: 40}
+
+      modals = [
+        {ConnectionModal.new(focused_field: :save_button),
+         ["[⚡ Test Connection]", "[ Save (Ctrl+S) ]", "[ Cancel (Esc) ]"]},
+        {ConnectionModal.new(
+           ssh_mode: :manual,
+           ssh_host: "bastion.io",
+           focused_field: :ssh_host
+         ), ["[⚡ Test Connection]", "[ Save (Ctrl+S) ]", "[ Cancel (Esc) ]"]},
+        {AISettingsModal.new(focused_field: :test_button),
+         ["[⚡ Test AI CLI]", "[ Save (Ctrl+S) ]", "[ Cancel (Esc) ]"]},
+        {ExportModal.new(focused_field: :export_button), ["[ Export Data ]", "[ Cancel ]"]},
+        {UpdateModal.new(focused_field: :check_button),
+         ["[🔄 Check for Updates]", "[ Close (Esc) ]"]},
+        {Strata.UI.Components.ConfirmModal.new(
+           kind: :close_dirty_tab,
+           tab_name: "users",
+           dirty_count: 2
+         ), ["[ Discard & Close ]", "[ Save & Close ]", "[ Cancel (Esc) ]"]},
+        {Strata.UI.Components.ConfirmModal.new(
+           kind: :refresh_dirty_table,
+           tab_name: "orders",
+           dirty_count: 1
+         ), ["[ Discard & Refresh ]", "[ Save & Refresh ]", "[ Cancel (Esc) ]"]}
+      ]
+
+      Enum.each(modals, fn {modal, expected_labels} ->
+        app = App.new(window_size: {120, 40}) |> App.push_modal(modal)
+        widgets = Renderer.render(app)
+        {modal_para, _rect} = List.last(widgets)
+
+        lines =
+          Enum.map(modal_para.text, fn line ->
+            Enum.map_join(line.spans, "", & &1.content)
+          end)
+
+        button_line =
+          Enum.find(lines, fn ln ->
+            Enum.all?(expected_labels, &String.contains?(ln, &1))
+          end)
+
+        assert button_line != nil
+        assert :ok == ExRatatui.CellSession.draw(session, App.render(app, frame))
+      end)
+    end
+
+    test "styles idle modal tips in muted gray and adds uniform ←/→ hints on select/toggle fields" do
+      export_app =
+        App.new(window_size: {120, 40}) |> App.push_modal(Strata.UI.Components.ExportModal.new())
+
+      {export_para, _} = Renderer.render(export_app) |> List.last()
+
+      tip_line =
+        Enum.find(export_para.text, fn line ->
+          Enum.any?(line.spans, &String.contains?(&1.content, "Tips:"))
+        end)
+
+      assert tip_line != nil
+      assert Enum.all?(tip_line.spans, &(&1.style.fg == :gray))
+
+      select_lines =
+        Enum.filter(export_para.text, fn line ->
+          Enum.any?(line.spans, &String.contains?(&1.content, "←/→"))
+        end)
+
+      # Format, Scope (select lines), plus the Tips line all include ←/→
+      assert length(select_lines) >= 2
+
+      assert Enum.any?(export_para.text, fn line ->
+               Enum.any?(line.spans, &String.contains?(&1.content, "▾  Enter/←/→"))
+             end)
+    end
+
+    test "renders floating List dropdown overlay above modal when modal_dropdown is active" do
+      session = ExRatatui.CellSession.new(120, 40)
+      frame = %ExRatatui.Frame{width: 120, height: 40}
+
+      app =
+        App.new(window_size: {120, 40})
+        |> App.push_modal(Strata.UI.Components.ConnectionModal.new(focused_field: :driver))
+        |> App.handle_key(:enter)
+
+      assert %{field: :driver, items: items} = Renderer.modal_dropdown_data(app, {120, 40})
+      assert length(items) == 3
+
+      widgets = Renderer.render(app)
+      {dd_list, dd_rect} = List.last(widgets)
+      assert %ExRatatui.Widgets.List{} = dd_list
+      assert Enum.any?(dd_list.items, &(&1 == "mysql"))
+      assert dd_rect.width >= 20
+      assert :ok == ExRatatui.CellSession.draw(session, App.render(app, frame))
     end
   end
 end

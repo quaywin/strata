@@ -51,8 +51,8 @@ defmodule Strata.UI.Components.ActionsModalTest do
       sidebar_modal = ActionsModal.new(grid, :table_view, focus: :sidebar)
       sidebar_ids = Enum.map(sidebar_modal.items, & &1.id)
       assert hd(sidebar_ids) == :sidebar_add_conn
-      assert :sidebar_ssh in sidebar_ids
       assert :sidebar_refresh in sidebar_ids
+      refute :sidebar_ssh in sidebar_ids
       refute :edit_cell in sidebar_ids
 
       editor_modal = ActionsModal.new(grid, :query_view, focus: :editor)

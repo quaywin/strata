@@ -10,13 +10,13 @@ defmodule Strata.UI.App do
   alias Strata.UI.Components.ActionsModal
   alias Strata.UI.Components.AIChatPanel
   alias Strata.UI.Components.AISettingsModal
+  alias Strata.UI.Components.ConfirmModal
   alias Strata.UI.Components.ConnectionModal
   alias Strata.UI.Components.DataGrid
   alias Strata.UI.Components.ExportModal
   alias Strata.UI.Components.Sidebar
   alias Strata.UI.Components.SQLEditor
   alias Strata.UI.Components.SQLTabPickerModal
-  alias Strata.UI.Components.SSHModal
   alias Strata.UI.Components.UpdateModal
   alias Strata.UI.Renderer
 
@@ -85,7 +85,11 @@ defmodule Strata.UI.App do
           text_selection: {{integer(), integer()}, {integer(), integer()}} | nil,
           selection_screen: map() | nil,
           selection_bounds: map() | nil,
-          update_info: map() | nil
+          update_info: map() | nil,
+          modal_dropdown: map() | nil,
+          pending_commit_action:
+            {:close_tab, String.t()} | {:refresh_tab, String.t() | nil, String.t()} | :quit | nil,
+          quit_requested?: boolean()
         }
 
   defstruct focus: :sidebar,
@@ -146,7 +150,10 @@ defmodule Strata.UI.App do
             text_selection: nil,
             selection_screen: nil,
             selection_bounds: nil,
-            update_info: nil
+            update_info: nil,
+            modal_dropdown: nil,
+            pending_commit_action: nil,
+            quit_requested?: false
 
   @env Application.compile_env(:strata, :env, :prod)
   @panes [:sidebar, :editor, :datagrid]
@@ -206,7 +213,11 @@ defmodule Strata.UI.App do
 
     cond do
       match?(%DataGrid{editing_cell: {_r, _c}}, state.datagrid_state) ->
-        {:noreply, handle_inline_edit_key(state, mapped_key)}
+        if mapped_key == {:ctrl, "w"} do
+          {:noreply, close_tab(state, state.active_tab_id)}
+        else
+          {:noreply, handle_inline_edit_key(state, mapped_key)}
+        end
 
       state.filter_bar_open and state.filter_bar_focused ->
         {:noreply, handle_filter_bar_key(state, mapped_key)}
@@ -216,15 +227,11 @@ defmodule Strata.UI.App do
 
       mapped_key in ["q", "Q"] and state.focus not in [:editor, :ai_panel] and
           Enum.empty?(state.modals) ->
-        {:stop, state}
+        handle_quit_request(state)
 
       match?([%ConnectionModal{focused_field: :test_button} | _], state.modals) and
           mapped_key in [:enter, :space] ->
         {:noreply, test_connection_async(state)}
-
-      match?([%SSHModal{focused_field: :test_button} | _], state.modals) and
-          mapped_key in [:enter, :space] ->
-        {:noreply, test_ssh_async(state)}
 
       match?([%AISettingsModal{focused_field: :test_button} | _], state.modals) and
           mapped_key in [:enter, :space] ->
@@ -243,7 +250,7 @@ defmodule Strata.UI.App do
 
       true ->
         new_state = handle_key(state, mapped_key)
-        {:noreply, new_state}
+        if new_state.quit_requested?, do: {:stop, new_state}, else: {:noreply, new_state}
     end
   end
 
@@ -283,7 +290,12 @@ defmodule Strata.UI.App do
 
       kind_str == "up" and left_button? ->
         new_state = handle_drag_finish(state, col, row)
-        {:noreply, new_state, pointer: pointer_for_position(new_state, col, row)}
+
+        if new_state.quit_requested? do
+          {:stop, new_state}
+        else
+          {:noreply, new_state, pointer: pointer_for_position(new_state, col, row)}
+        end
 
       kind_str in ["down", "click", "drag", "up"] ->
         {:noreply, state, render?: false, pointer: pointer_for_position(state, col, row)}
@@ -516,9 +528,29 @@ defmodule Strata.UI.App do
     selected_item = Enum.find(visible, &(&1.id == state.selected_tree_node_id))
 
     if selected_item && selected_item.type in [:table, :view] do
-      load_table_async(%{state | sidebar_filter_active: false}, selected_item.label,
-        refresh: true
-      )
+      {profile, schema} = Sidebar.resolve_selection_context(state)
+      profile_id = profile && profile.id
+      existing_tab = find_table_tab(state.tabs, profile_id, schema, selected_item.label)
+      {staged_count, inline_editing?} = dirty_state_for_tab(state, existing_tab)
+
+      if staged_count > 0 or inline_editing? do
+        modal =
+          ConfirmModal.new(
+            kind: :refresh_dirty_table,
+            tab_id: existing_tab && existing_tab.id,
+            tab_name: selected_item.label,
+            dirty_count: staged_count,
+            inline_editing?: inline_editing?,
+            can_commit?: true,
+            focused_field: :cancel_button
+          )
+
+        push_modal(%{state | sidebar_filter_active: false}, modal)
+      else
+        load_table_async(%{state | sidebar_filter_active: false}, selected_item.label,
+          refresh: true
+        )
+      end
     else
       refresh_selected_connection_schema_async(state)
     end
@@ -803,7 +835,7 @@ defmodule Strata.UI.App do
               )
 
             {:error, reason} ->
-              msg = if is_binary(reason), do: reason, else: inspect(reason)
+              msg = Strata.Formatter.format_error(reason)
               err_grid = DataGrid.new(["error"], [[msg]], has_more: false, loading_more: false)
 
               state
@@ -914,7 +946,7 @@ defmodule Strata.UI.App do
               )
 
             {:error, reason} ->
-              msg = if is_binary(reason), do: reason, else: inspect(reason)
+              msg = Strata.Formatter.format_error(reason)
 
               state
               |> update_tab_by_id(tab_id, fn tab ->
@@ -974,7 +1006,7 @@ defmodule Strata.UI.App do
               |> Map.put(:status_message, "#{sort_desc} (#{length(rows)} rows)")
 
             {:error, reason} ->
-              msg = if is_binary(reason), do: reason, else: inspect(reason)
+              msg = Strata.Formatter.format_error(reason)
 
               state
               |> update_tab_by_id(tab_id, fn tab ->
@@ -998,62 +1030,86 @@ defmodule Strata.UI.App do
         {:ok, stmt_count} ->
           Strata.DataStore.invalidate_table_cache(profile_id, schema, table_name)
 
-          state
-          |> load_table_async(table_name, refresh: true)
-          |> Map.put(:status_message, "✅ Committed #{stmt_count} statement(s) to '#{table_name}'")
+          case state.pending_commit_action do
+            {:close_tab, tab_id} ->
+              state
+              |> pop_confirm_modal_if_present()
+              |> Map.put(:pending_commit_action, nil)
+              |> close_tab(tab_id, force: true)
+              |> Map.put(
+                :status_message,
+                "✅ Committed #{stmt_count} statement(s) and closed '#{table_name}'"
+              )
+
+            {:refresh_tab, _tab_id, target_table} ->
+              state
+              |> pop_confirm_modal_if_present()
+              |> Map.put(:pending_commit_action, nil)
+              |> load_table_async(target_table, refresh: true)
+              |> Map.put(
+                :status_message,
+                "✅ Committed #{stmt_count} statement(s) and refreshed '#{target_table}'"
+              )
+
+            :quit ->
+              state
+              |> pop_confirm_modal_if_present()
+              |> Map.put(:pending_commit_action, nil)
+              |> Map.put(:quit_requested?, true)
+              |> Map.put(
+                :status_message,
+                "✅ Committed #{stmt_count} statement(s) to '#{table_name}'"
+              )
+
+            nil ->
+              state
+              |> load_table_async(table_name, refresh: true)
+              |> Map.put(
+                :status_message,
+                "✅ Committed #{stmt_count} statement(s) to '#{table_name}'"
+              )
+          end
 
         {:error, reason} ->
-          msg = if is_binary(reason), do: reason, else: inspect(reason)
-          %{state | status_message: "❌ Commit rolled back: #{msg}"}
+          msg = Strata.Formatter.format_error(reason)
+
+          if state.pending_commit_action != nil do
+            case state.modals do
+              [%ConfirmModal{} = cm | rest] ->
+                updated_cm = %{
+                  cm
+                  | status: :error,
+                    status_message: "❌ Commit rolled back (changes kept): #{msg}"
+                }
+
+                %{
+                  state
+                  | modals: [updated_cm | rest],
+                    pending_commit_action: nil,
+                    status_message: "❌ Commit rolled back: #{msg}"
+                }
+
+              _ ->
+                %{
+                  state
+                  | pending_commit_action: nil,
+                    status_message: "❌ Commit rolled back: #{msg}"
+                }
+            end
+          else
+            %{state | status_message: "❌ Commit rolled back: #{msg}"}
+          end
       end
 
-    {:noreply, state}
+    if state.quit_requested?, do: {:stop, state}, else: {:noreply, state}
   end
 
   def handle_info({:connection_test_finished, res}, state) do
     state =
       case state.modals do
         [%ConnectionModal{} = cm | rest] ->
-          updated_cm =
-            case res do
-              :ok ->
-                %{cm | status: :ok, status_message: "⚡ Connection successful!"}
-
-              {:ok, _} ->
-                %{cm | status: :ok, status_message: "⚡ Connection successful!"}
-
-              {:error, reason} ->
-                msg = if is_binary(reason), do: reason, else: inspect(reason)
-                %{cm | status: :error, status_message: "❌ Connection failed: " <> msg}
-            end
-
+          updated_cm = ConnectionModal.apply_test_result(cm, res)
           %{state | modals: [updated_cm | rest]}
-
-        _ ->
-          state
-      end
-
-    {:noreply, state}
-  end
-
-  def handle_info({:ssh_test_finished, res}, state) do
-    state =
-      case state.modals do
-        [%SSHModal{} = sm | rest] ->
-          updated_sm =
-            case res do
-              :ok ->
-                %{sm | status: :ok, status_message: "⚡ SSH connection successful!"}
-
-              {:ok, _} ->
-                %{sm | status: :ok, status_message: "⚡ SSH connection successful!"}
-
-              {:error, reason} ->
-                msg = if is_binary(reason), do: reason, else: inspect(reason)
-                %{sm | status: :error, status_message: "❌ SSH test failed: " <> msg}
-            end
-
-          %{state | modals: [updated_sm | rest]}
 
         _ ->
           state
@@ -1072,7 +1128,7 @@ defmodule Strata.UI.App do
                 %{am | status: :ok, status_message: msg}
 
               {:error, reason} ->
-                msg = if is_binary(reason), do: reason, else: inspect(reason)
+                msg = Strata.Formatter.format_error(reason)
                 %{am | status: :error, status_message: "❌ AI CLI test failed: " <> msg}
             end
 
@@ -1276,14 +1332,21 @@ defmodule Strata.UI.App do
             child
 
           old_child ->
-            %{
+            if Map.has_key?(child, :expanded?) do
+              Map.put(
+                child,
+                :expanded?,
+                Map.get(old_child, :expanded?, Map.get(child, :expanded?, false))
+              )
+            else
               child
-              | expanded?: Map.get(old_child, :expanded?, Map.get(child, :expanded?, false))
-            }
+            end
         end
       end)
 
-    %{new_node | expanded?: exp?, children: updated_children}
+    new_node
+    |> Map.put(:expanded?, exp?)
+    |> Map.put(:children, updated_children)
   end
 
   defp apply_filter_query_result(state, tab_id, where_clause, order_by_clause, result) do
@@ -1320,7 +1383,7 @@ defmodule Strata.UI.App do
         )
 
       {:error, reason} ->
-        msg = if is_binary(reason), do: reason, else: inspect(reason)
+        msg = Strata.Formatter.format_error(reason)
         %{state | status_message: "❌ Filter SQL error: #{msg}"}
     end
   end
@@ -1355,7 +1418,8 @@ defmodule Strata.UI.App do
             |> Map.put(:status_message, status_msg)
 
           {:error, reason} ->
-            status_msg = "Error loading more rows for '#{table_name}': #{reason}"
+            status_msg =
+              "Error loading more rows for '#{table_name}': #{Strata.Formatter.format_error(reason)}"
 
             state
             |> update_tab_by_id(tab_id, fn t ->
@@ -1393,7 +1457,7 @@ defmodule Strata.UI.App do
         )
 
       {:error, reason} ->
-        msg = if is_binary(reason), do: reason, else: inspect(reason)
+        msg = Strata.Formatter.format_error(reason)
         err_grid = DataGrid.new(["error"], [[msg]], has_more: false, loading_more: false)
 
         state
@@ -1424,7 +1488,7 @@ defmodule Strata.UI.App do
               )
 
             {:error, reason} ->
-              msg = if is_binary(reason), do: reason, else: inspect(reason)
+              msg = Strata.Formatter.format_error(reason)
 
               state
               |> update_tab_by_id(tab_id, fn t ->
@@ -1874,30 +1938,6 @@ defmodule Strata.UI.App do
 
   defp test_connection_async(state), do: state
 
-  defp test_ssh_async(%__MODULE__{modals: [%SSHModal{} = sm | rest]} = state) do
-    profile = SSHModal.to_profile(sm)
-    caller = self()
-
-    Task.start(fn ->
-      res =
-        case Strata.SSHTunnel.connect(profile, "127.0.0.1", profile.port || 22) do
-          {:ok, _port, pid} ->
-            Strata.SSHTunnel.stop(pid)
-            :ok
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      send(caller, {:ssh_test_finished, res})
-    end)
-
-    updated_sm = %{sm | status: :testing, status_message: "⏳ Testing SSH connection..."}
-    %{state | modals: [updated_sm | rest]}
-  end
-
-  defp test_ssh_async(state), do: state
-
   defp test_ai_cli_async(%__MODULE__{modals: [%AISettingsModal{} = am | rest]} = state) do
     settings = AISettingsModal.to_settings(am)
     caller = self()
@@ -2244,7 +2284,7 @@ defmodule Strata.UI.App do
   defp cancel_ai_request(app), do: app
 
   defp apply_ai_task_result(app, tab_id, msg_id, {:error, msg}) do
-    err_text = to_string(msg)
+    err_text = Strata.Formatter.format_error(msg)
 
     app =
       if tab_id do
@@ -2490,14 +2530,36 @@ defmodule Strata.UI.App do
 
   @doc """
   Invalidates cache and reloads the currently selected table.
+  Prompts with `ConfirmModal` when uncommitted edits are present unless `force: true`.
   """
-  @spec refresh_active_table(t()) :: t()
-  def refresh_active_table(%__MODULE__{active_view: :table_view, selected_table: tbl} = app)
+  @spec refresh_active_table(t(), keyword()) :: t()
+  def refresh_active_table(app, opts \\ [])
+
+  def refresh_active_table(%__MODULE__{active_view: :table_view, selected_table: tbl} = app, opts)
       when is_binary(tbl) do
-    load_table_async(app, tbl, refresh: true)
+    force? = Keyword.get(opts, :force, false)
+    tab = active_tab(app)
+    {staged_count, inline_editing?} = dirty_state_for_tab(app, tab)
+
+    if not force? and (staged_count > 0 or inline_editing?) do
+      modal =
+        ConfirmModal.new(
+          kind: :refresh_dirty_table,
+          tab_id: tab && tab.id,
+          tab_name: tbl,
+          dirty_count: staged_count,
+          inline_editing?: inline_editing?,
+          can_commit?: true,
+          focused_field: :cancel_button
+        )
+
+      push_modal(app, modal)
+    else
+      load_table_async(app, tbl, refresh: true)
+    end
   end
 
-  def refresh_active_table(app), do: app
+  def refresh_active_table(app, _opts), do: app
 
   @doc """
   Toggles Table View between `:data` rows and `:structure` schema metadata.
@@ -2590,7 +2652,7 @@ defmodule Strata.UI.App do
     grid = app.datagrid_state || DataGrid.new()
 
     cond do
-      DataGrid.dirty_count(grid) > 0 ->
+      dirty_grid?(grid) ->
         %{app | status_message: "⚠️ Commit (Ctrl+S) or Revert (Ctrl+Z) changes before sorting"}
 
       true ->
@@ -3336,6 +3398,19 @@ defmodule Strata.UI.App do
 
   defp apply_smart_filter(app) do
     grid = app.datagrid_state || DataGrid.new()
+
+    if app.active_view == :table_view and is_binary(app.selected_table) and dirty_grid?(grid) do
+      %{
+        app
+        | filter_bar_focused: false,
+          status_message: "⚠️ Commit (Ctrl+S) or Revert (Ctrl+Z) changes before filtering"
+      }
+    else
+      do_apply_smart_filter(app, grid)
+    end
+  end
+
+  defp do_apply_smart_filter(app, grid) do
     col = app.filter_bar_col || "* All"
     op = app.filter_bar_op || :contains
     val = app.filter_bar_text || ""
@@ -3382,7 +3457,7 @@ defmodule Strata.UI.App do
           %{app | status_message: "⏳ Filtering: #{filter_spec.summary}..."}
 
         {:error, reason} ->
-          %{app | status_message: "❌ Filter error: #{inspect(reason)}"}
+          %{app | status_message: "❌ Filter error: #{Strata.Formatter.format_error(reason)}"}
       end
     else
       %{app | status_message: "Filter applied: #{filter_spec.summary}"}
@@ -3422,31 +3497,41 @@ defmodule Strata.UI.App do
   @spec clear_table_filter(t()) :: t()
   def clear_table_filter(%__MODULE__{} = app) do
     had_active_filter? = not is_nil(app.active_filter)
-    if app.filter_bar_ref, do: ExRatatui.text_input_set_value(app.filter_bar_ref, "")
 
-    base = %{
-      app
-      | active_filter: nil,
-        filter_bar_open: false,
-        filter_bar_focused: false,
-        filter_bar_transient: false,
-        filter_bar_focus_part: :value,
-        filter_bar_col: "* All",
-        filter_bar_op: :contains,
-        filter_bar_text: "",
-        filter_history_idx: nil,
-        filter_history_draft: nil,
-        filter_dropdown: nil,
-        filter_dropdown_idx: 0,
-        filter_dropdown_search: ""
-    }
-
-    if had_active_filter? and app.active_view == :table_view and is_binary(app.selected_table) do
-      base
-      |> refresh_active_table()
-      |> Map.put(:status_message, "Filter cleared — showing full table")
+    if had_active_filter? and app.active_view == :table_view and is_binary(app.selected_table) and
+         dirty_grid?(app.datagrid_state) do
+      %{
+        app
+        | filter_bar_focused: false,
+          status_message: "⚠️ Commit (Ctrl+S) or Revert (Ctrl+Z) changes before clearing filter"
+      }
     else
-      %{base | status_message: "Filter bar closed"}
+      if app.filter_bar_ref, do: ExRatatui.text_input_set_value(app.filter_bar_ref, "")
+
+      base = %{
+        app
+        | active_filter: nil,
+          filter_bar_open: false,
+          filter_bar_focused: false,
+          filter_bar_transient: false,
+          filter_bar_focus_part: :value,
+          filter_bar_col: "* All",
+          filter_bar_op: :contains,
+          filter_bar_text: "",
+          filter_history_idx: nil,
+          filter_history_draft: nil,
+          filter_dropdown: nil,
+          filter_dropdown_idx: 0,
+          filter_dropdown_search: ""
+      }
+
+      if had_active_filter? and app.active_view == :table_view and is_binary(app.selected_table) do
+        base
+        |> refresh_active_table(force: true)
+        |> Map.put(:status_message, "Filter cleared — showing full table")
+      else
+        %{base | status_message: "Filter bar closed"}
+      end
     end
   end
 
@@ -3820,7 +3905,11 @@ defmodule Strata.UI.App do
             }
 
           {:error, reason} ->
-            %{app | status_message: "❌ Cannot build commit SQL: #{inspect(reason)}"}
+            %{
+              app
+              | status_message:
+                  "❌ Cannot build commit SQL: #{Strata.Formatter.format_error(reason)}"
+            }
         end
     end
   end
@@ -3881,9 +3970,6 @@ defmodule Strata.UI.App do
 
       :sidebar_delete_conn ->
         Sidebar.handle_key(%{app | focus: :sidebar}, "d")
-
-      :sidebar_ssh ->
-        push_modal(app, SSHModal.new())
 
       :sidebar_refresh ->
         refresh_sidebar_selection(app)
@@ -4175,13 +4261,37 @@ defmodule Strata.UI.App do
 
   @doc """
   Closes tab with given ID and adjusts active tab, hydrating the newly focused tab.
+  Prompts with `ConfirmModal` when the tab has uncommitted table edits unless `force: true`.
   """
-  @spec close_tab(t(), String.t() | nil) :: t()
-  def close_tab(%__MODULE__{}, nil), do: %__MODULE__{}
+  @spec close_tab(t(), String.t() | nil, keyword()) :: t()
+  def close_tab(app, tab_id, opts \\ [])
+  def close_tab(%__MODULE__{}, nil, _opts), do: %__MODULE__{}
 
-  def close_tab(%__MODULE__{active_tab_id: active_id} = app, tab_id) do
+  def close_tab(%__MODULE__{active_tab_id: active_id} = app, tab_id, opts) do
     app = persist_active_tab(app)
     closing_tab = Enum.find(app.tabs, &(&1.id == tab_id))
+    force? = Keyword.get(opts, :force, false)
+    {staged_count, inline_editing?} = dirty_state_for_tab(app, closing_tab)
+
+    if not force? and closing_tab != nil and (staged_count > 0 or inline_editing?) do
+      modal =
+        ConfirmModal.new(
+          kind: :close_dirty_tab,
+          tab_id: closing_tab.id,
+          tab_name: closing_tab.name,
+          dirty_count: staged_count,
+          inline_editing?: inline_editing?,
+          can_commit?: true,
+          focused_field: :cancel_button
+        )
+
+      push_modal(app, modal)
+    else
+      do_close_tab(app, active_id, tab_id, closing_tab)
+    end
+  end
+
+  defp do_close_tab(app, active_id, tab_id, closing_tab) do
     closed_idx = Enum.find_index(app.tabs, &(&1.id == tab_id))
     remaining = Enum.reject(app.tabs, &(&1.id == tab_id))
 
@@ -4238,6 +4348,156 @@ defmodule Strata.UI.App do
       true ->
         %{app | tabs: remaining}
         |> save_workspace_sync()
+    end
+  end
+
+  defp handle_quit_request(state) do
+    case dirty_tabs_info(state) do
+      [] ->
+        {:stop, state}
+
+      [single] ->
+        modal =
+          ConfirmModal.new(
+            kind: :quit_with_dirty_tabs,
+            tab_id: single.tab.id,
+            tab_name: single.tab.name,
+            dirty_count: single.staged_count,
+            inline_editing?: single.inline_editing?,
+            can_commit?: true,
+            focused_field: :cancel_button
+          )
+
+        {:noreply, push_modal(state, modal)}
+
+      many ->
+        modal =
+          ConfirmModal.new(
+            kind: :quit_with_dirty_tabs,
+            tab_id: nil,
+            tab_name: Enum.map_join(many, ", ", & &1.tab.name),
+            dirty_count: Enum.sum(Enum.map(many, & &1.staged_count)),
+            inline_editing?: Enum.any?(many, & &1.inline_editing?),
+            can_commit?: false,
+            focused_field: :cancel_button
+          )
+
+        {:noreply, push_modal(state, modal)}
+    end
+  end
+
+  defp dirty_tabs_info(app) do
+    persisted = persist_active_tab(app)
+
+    Enum.flat_map(persisted.tabs, fn tab ->
+      {staged_count, inline_editing?} = dirty_state_for_tab(persisted, tab)
+
+      if staged_count > 0 or inline_editing? do
+        [%{tab: tab, staged_count: staged_count, inline_editing?: inline_editing?}]
+      else
+        []
+      end
+    end)
+  end
+
+  defp dirty_grid?(%DataGrid{editing_cell: {_r, _c}}), do: true
+  defp dirty_grid?(%DataGrid{} = grid), do: DataGrid.dirty_count(grid) > 0
+  defp dirty_grid?(_), do: false
+
+  defp dirty_state_for_tab(_app, nil), do: {0, false}
+
+  defp dirty_state_for_tab(app, tab) do
+    grid =
+      if tab.id == app.active_tab_id do
+        app.datagrid_state || Map.get(tab, :datagrid_state)
+      else
+        Map.get(tab, :datagrid_state)
+      end
+
+    staged_count = if match?(%DataGrid{}, grid), do: DataGrid.dirty_count(grid), else: 0
+
+    inline_editing? =
+      tab.id == app.active_tab_id and match?(%DataGrid{editing_cell: {_r, _c}}, grid)
+
+    {staged_count, inline_editing?}
+  end
+
+  defp pop_confirm_modal_if_present(%{modals: [%ConfirmModal{} | _]} = state) do
+    {_popped, popped_state} = pop_modal(state)
+    popped_state
+  end
+
+  defp pop_confirm_modal_if_present(state), do: state
+
+  defp commit_and_complete_confirm_modal(app, modal, rest) do
+    target_tab_id = modal.tab_id || app.active_tab_id
+
+    app =
+      if target_tab_id && target_tab_id != app.active_tab_id do
+        switch_tab(app, target_tab_id)
+      else
+        app
+      end
+
+    app =
+      if match?(%DataGrid{editing_cell: {_r, _c}}, app.datagrid_state) do
+        if app.inline_input_ref do
+          handle_inline_edit_key(app, :enter)
+        else
+          %{app | datagrid_state: %{app.datagrid_state | editing_cell: nil}}
+        end
+      else
+        app
+      end
+
+    dirty = if app.datagrid_state, do: DataGrid.dirty_count(app.datagrid_state), else: 0
+
+    if dirty == 0 do
+      {_popped, popped_app} = pop_modal(app)
+      popped_app = %{popped_app | pending_commit_action: nil}
+
+      case modal.kind do
+        :quit_with_dirty_tabs ->
+          %{popped_app | quit_requested?: true}
+
+        :refresh_dirty_table ->
+          load_table_async(popped_app, modal.tab_name || popped_app.selected_table, refresh: true)
+
+        _ ->
+          close_tab(popped_app, target_tab_id, force: true)
+      end
+    else
+      committed_app = commit_staged_changes(app)
+
+      if String.starts_with?(to_string(committed_app.status_message || ""), "❌") do
+        err_modal = %{
+          modal
+          | status: :error,
+            status_message: committed_app.status_message
+        }
+
+        %{committed_app | modals: [err_modal | rest], pending_commit_action: nil}
+      else
+        action =
+          case modal.kind do
+            :quit_with_dirty_tabs ->
+              :quit
+
+            :refresh_dirty_table ->
+              {:refresh_tab, target_tab_id, modal.tab_name || app.selected_table}
+
+            _ ->
+              {:close_tab, target_tab_id}
+          end
+
+        saving_modal = %{
+          modal
+          | status: :saving,
+            status_message: "⏳ Committing changes..."
+        }
+
+        %{committed_app | modals: [saving_modal | rest], pending_commit_action: action}
+      end
     end
   end
 
@@ -4646,7 +4906,7 @@ defmodule Strata.UI.App do
   """
   @spec push_modal(t(), map()) :: t()
   def push_modal(%__MODULE__{modals: modals} = app, modal) when is_map(modal) do
-    %{app | modals: [modal | modals]}
+    %{app | modals: [modal | modals], modal_dropdown: nil}
   end
 
   @doc """
@@ -4654,11 +4914,11 @@ defmodule Strata.UI.App do
   """
   @spec pop_modal(t()) :: {map() | nil, t()}
   def pop_modal(%__MODULE__{modals: [top | rest]} = app) do
-    {top, %{app | modals: rest}}
+    {top, %{app | modals: rest, modal_dropdown: nil}}
   end
 
   def pop_modal(%__MODULE__{modals: []} = app) do
-    {nil, app}
+    {nil, %{app | modal_dropdown: nil}}
   end
 
   @doc """
@@ -4681,198 +4941,15 @@ defmodule Strata.UI.App do
     end
   end
 
+  def handle_key(%__MODULE__{modals: [top | rest], modal_dropdown: %{} = dd} = app, key) do
+    handle_modal_dropdown_key(app, top, rest, dd, key)
+  end
+
   def handle_key(%__MODULE__{modals: [top | rest]} = app, key) do
-    case key do
-      :esc when not is_struct(top, SQLTabPickerModal) ->
-        {_popped, app} = pop_modal(app)
-        app
-
-      _ ->
-        cond do
-          match?(%SQLTabPickerModal{}, top) ->
-            case SQLTabPickerModal.handle_key(top, key) do
-              {:new_blank, _modal} ->
-                {_popped, app} = pop_modal(app)
-                open_tab(app)
-
-              {:reopen, closed_tab, _modal} ->
-                {_popped, app} = pop_modal(app)
-                reopen_closed_tab(app, closed_tab)
-
-              {:delete_closed, closed_id, updated_modal} ->
-                remaining_closed =
-                  Enum.reject(app.closed_tabs || [], &(Map.get(&1, :id) == closed_id))
-
-                %{app | closed_tabs: remaining_closed, modals: [updated_modal | rest]}
-                |> save_workspace_async()
-
-              {:cancel, _modal} ->
-                {_popped, app} = pop_modal(app)
-                app
-
-              %SQLTabPickerModal{} = updated_modal ->
-                %{app | modals: [updated_modal | rest]}
-            end
-
-          match?(%ActionsModal{}, top) ->
-            case ActionsModal.handle_key(top, key) do
-              {:execute, action_id, _modal} ->
-                {_popped, app} = pop_modal(app)
-                execute_actions_modal_item(app, action_id)
-
-              {:cancel, _modal} ->
-                {_popped, app} = pop_modal(app)
-                app
-
-              %ActionsModal{} = updated_modal ->
-                %{app | modals: [updated_modal | rest]}
-            end
-
-          match?(%ConnectionModal{}, top) ->
-            case ConnectionModal.handle_key(top, key) do
-              {:save, modal} ->
-                profile = ConnectionModal.to_profile(modal)
-                _ = Strata.ConnectionSupervisor.stop_worker(profile.id)
-                _ = Strata.DataStore.invalidate_connection_cache(profile.id)
-
-                try do
-                  Strata.ConfigStore.put_profile(profile)
-                catch
-                  _, _ -> :ok
-                end
-
-                {_popped, app} = pop_modal(app)
-                updated_nodes = Sidebar.load_nodes()
-
-                %{app | sidebar_nodes: updated_nodes, selected_tree_node_id: profile.id}
-                |> refresh_connection_schema_async(profile)
-
-              {:cancel, _modal} ->
-                {_popped, app} = pop_modal(app)
-                app
-
-              %ConnectionModal{} = updated_modal ->
-                %{app | modals: [updated_modal | rest]}
-            end
-
-          match?(%SSHModal{}, top) ->
-            case SSHModal.handle_key(top, key) do
-              {:save, modal} ->
-                ssh_profile = SSHModal.to_profile(modal)
-
-                try do
-                  Strata.SSHProfileStore.put_profile(ssh_profile)
-                catch
-                  _, _ -> :ok
-                end
-
-                {_popped, app} = pop_modal(app)
-
-                %{
-                  app
-                  | status_message: "Saved SSH profile '#{ssh_profile.name}' (#{ssh_profile.id})"
-                }
-
-              {:delete, modal} ->
-                try do
-                  Strata.SSHProfileStore.delete_profile(modal.id)
-                catch
-                  _, _ -> :ok
-                end
-
-                {_popped, app} = pop_modal(app)
-                %{app | status_message: "🗑️ Deleted SSH profile '#{modal.name}'"}
-
-              {:cancel, _modal} ->
-                {_popped, app} = pop_modal(app)
-                app
-
-              %SSHModal{} = updated_modal ->
-                %{app | modals: [updated_modal | rest]}
-            end
-
-          match?(%AISettingsModal{}, top) ->
-            case AISettingsModal.handle_key(top, key) do
-              {:save, modal} ->
-                settings = AISettingsModal.to_settings(modal)
-
-                try do
-                  Strata.AISettingsStore.put(settings)
-                catch
-                  _, _ -> :ok
-                end
-
-                {_popped, app} = pop_modal(app)
-
-                %{
-                  app
-                  | status_message:
-                      "Saved AI settings (#{Strata.AISettings.cli_command(settings.provider)})"
-                }
-
-              {:test, _modal} ->
-                test_ai_cli_async(app)
-
-              {:cancel, _modal} ->
-                {_popped, app} = pop_modal(app)
-                app
-
-              %AISettingsModal{} = updated_modal ->
-                %{app | modals: [updated_modal | rest]}
-            end
-
-          match?(%UpdateModal{}, top) ->
-            case UpdateModal.handle_key(top, key) do
-              {:check, _modal} ->
-                check_updates_async(app)
-
-              {:install, _modal} ->
-                install_update_async(app)
-
-              {:cancel, _modal} ->
-                {_popped, app} = pop_modal(app)
-                app
-
-              %UpdateModal{} = updated_modal ->
-                %{app | modals: [updated_modal | rest]}
-            end
-
-          match?(%{type: :confirm_delete_connection}, top) ->
-            case key do
-              k when k in ["y", "Y", :enter] ->
-                {_popped, app} = pop_modal(app)
-                Sidebar.delete_connection_by_id(app, top.profile_id)
-
-              k when k in ["n", "N", :esc] ->
-                {_popped, app} = pop_modal(app)
-                %{app | status_message: "Cancelled connection delete"}
-
-              _ ->
-                app
-            end
-
-          match?(%ExportModal{}, top) ->
-            case ExportModal.handle_key(top, key) do
-              {:apply, {:export, format, file_path, scope}, modal} ->
-                {_popped, app} = pop_modal(app)
-                export_grid_data(app, modal, format, file_path, scope)
-
-              {:cancel, _modal} ->
-                {_popped, app} = pop_modal(app)
-                app
-
-              %ExportModal{} = updated_modal ->
-                %{app | modals: [updated_modal | rest]}
-            end
-
-          true ->
-            if key in [:enter, :space] do
-              {_popped, app} = pop_modal(app)
-              app
-            else
-              app
-            end
-        end
+    if key in [:enter, :space] and select_field_focused?(app, top) do
+      open_modal_dropdown(app, top, top.focused_field)
+    else
+      handle_modal_key_dispatch(app, top, rest, key)
     end
   end
 
@@ -4989,6 +5066,292 @@ defmodule Strata.UI.App do
   end
 
   def handle_key(%__MODULE__{} = app, _key), do: app
+
+  defp handle_modal_key_dispatch(app, top, rest, key) do
+    case key do
+      :esc when not is_struct(top, SQLTabPickerModal) ->
+        {_popped, app} = pop_modal(app)
+        if is_struct(top, ConfirmModal), do: %{app | pending_commit_action: nil}, else: app
+
+      _ ->
+        cond do
+          match?(%SQLTabPickerModal{}, top) ->
+            case SQLTabPickerModal.handle_key(top, key) do
+              {:new_blank, _modal} ->
+                {_popped, app} = pop_modal(app)
+                open_tab(app)
+
+              {:reopen, closed_tab, _modal} ->
+                {_popped, app} = pop_modal(app)
+                reopen_closed_tab(app, closed_tab)
+
+              {:delete_closed, closed_id, updated_modal} ->
+                remaining_closed =
+                  Enum.reject(app.closed_tabs || [], &(Map.get(&1, :id) == closed_id))
+
+                %{app | closed_tabs: remaining_closed, modals: [updated_modal | rest]}
+                |> save_workspace_async()
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %SQLTabPickerModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          match?(%ActionsModal{}, top) ->
+            case ActionsModal.handle_key(top, key) do
+              {:execute, action_id, _modal} ->
+                {_popped, app} = pop_modal(app)
+                execute_actions_modal_item(app, action_id)
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %ActionsModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          match?(%ConnectionModal{}, top) ->
+            case ConnectionModal.handle_key(top, key) do
+              {:save, modal} ->
+                profile = ConnectionModal.to_profile(modal)
+                _ = Strata.ConnectionSupervisor.stop_worker(profile.id)
+                _ = Strata.DataStore.invalidate_connection_cache(profile.id)
+
+                try do
+                  Strata.ConfigStore.put_profile(profile)
+                catch
+                  _, _ -> :ok
+                end
+
+                {_popped, app} = pop_modal(app)
+                updated_nodes = Sidebar.load_nodes()
+
+                %{app | sidebar_nodes: updated_nodes, selected_tree_node_id: profile.id}
+                |> refresh_connection_schema_async(profile)
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %ConnectionModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          match?(%AISettingsModal{}, top) ->
+            case AISettingsModal.handle_key(top, key) do
+              {:save, modal} ->
+                settings = AISettingsModal.to_settings(modal)
+
+                try do
+                  Strata.AISettingsStore.put(settings)
+                catch
+                  _, _ -> :ok
+                end
+
+                {_popped, app} = pop_modal(app)
+
+                %{
+                  app
+                  | status_message:
+                      "Saved AI settings (#{Strata.AISettings.cli_command(settings.provider)})"
+                }
+
+              {:test, _modal} ->
+                test_ai_cli_async(app)
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %AISettingsModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          match?(%UpdateModal{}, top) ->
+            case UpdateModal.handle_key(top, key) do
+              {:check, _modal} ->
+                check_updates_async(app)
+
+              {:install, _modal} ->
+                install_update_async(app)
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %UpdateModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          match?(%ConfirmModal{}, top) ->
+            case ConfirmModal.handle_key(top, key) do
+              {:discard, modal} ->
+                {_popped, app} = pop_modal(app)
+                app = %{app | pending_commit_action: nil}
+
+                case modal.kind do
+                  :quit_with_dirty_tabs ->
+                    %{app | quit_requested?: true}
+
+                  :refresh_dirty_table ->
+                    app =
+                      if modal.tab_id && modal.tab_id != app.active_tab_id,
+                        do: switch_tab(app, modal.tab_id),
+                        else: app
+
+                    app = cancel_inline_edit_if_active(app)
+                    load_table_async(app, modal.tab_name || app.selected_table, refresh: true)
+
+                  _ ->
+                    app =
+                      if modal.tab_id == app.active_tab_id,
+                        do: cancel_inline_edit_if_active(app),
+                        else: app
+
+                    close_tab(app, modal.tab_id, force: true)
+                end
+
+              {:commit, modal} ->
+                commit_and_complete_confirm_modal(app, modal, rest)
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                %{app | pending_commit_action: nil}
+
+              %ConfirmModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          match?(%{type: :confirm_delete_connection}, top) ->
+            case key do
+              k when k in ["y", "Y", :enter] ->
+                {_popped, app} = pop_modal(app)
+                Sidebar.delete_connection_by_id(app, top.profile_id)
+
+              k when k in ["n", "N", :esc] ->
+                {_popped, app} = pop_modal(app)
+                %{app | status_message: "Cancelled connection delete"}
+
+              _ ->
+                app
+            end
+
+          match?(%ExportModal{}, top) ->
+            case ExportModal.handle_key(top, key) do
+              {:apply, {:export, format, file_path, scope}, modal} ->
+                {_popped, app} = pop_modal(app)
+                export_grid_data(app, modal, format, file_path, scope)
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %ExportModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          true ->
+            if key in [:enter, :space] do
+              {_popped, app} = pop_modal(app)
+              app
+            else
+              app
+            end
+        end
+    end
+  end
+
+  defp select_field_focused?(%__MODULE__{window_size: ws} = _app, top) when is_struct(top) do
+    focused = Map.get(top, :focused_field)
+
+    if is_atom(focused) do
+      modal_area = Renderer.modal_area_for(%{modals: [top]}, ws)
+
+      modal_area
+      |> then(&Renderer.modal_rendered_info(top, &1))
+      |> Map.get(:fields, [])
+      |> Enum.any?(fn f -> f.key == focused and Map.get(f, :type) == :select end)
+    else
+      false
+    end
+  end
+
+  defp select_field_focused?(_app, _top), do: false
+
+  defp open_modal_dropdown(app, top, field) do
+    opts = Renderer.modal_dropdown_options(top, field)
+
+    if opts == [] do
+      app
+    else
+      sel_idx = Enum.find_index(opts, & &1.selected?) || 0
+      %{app | modal_dropdown: %{field: field, index: sel_idx, search: ""}}
+    end
+  end
+
+  defp apply_modal_dropdown_choice(app, top, rest, field, value) when is_struct(top) do
+    mod = top.__struct__
+
+    updated_top =
+      if Code.ensure_loaded?(mod) and function_exported?(mod, :apply_dropdown_selection, 3) do
+        mod.apply_dropdown_selection(top, field, value)
+      else
+        top
+      end
+
+    %{app | modals: [updated_top | rest], modal_dropdown: nil}
+  end
+
+  defp handle_modal_dropdown_key(app, top, rest, dd, key) do
+    dd_data = Renderer.modal_dropdown_data(app, app.window_size)
+    items = (dd_data && dd_data.items) || []
+    count = length(items)
+    cur_idx = if dd_data, do: dd_data.selected_index, else: 0
+
+    case key do
+      :esc ->
+        %{app | modal_dropdown: nil}
+
+      k when k == :enter or (k == :space and dd.search == "") ->
+        case Enum.at(items, cur_idx) do
+          %{value: val} -> apply_modal_dropdown_choice(app, top, rest, dd.field, val)
+          nil -> %{app | modal_dropdown: nil}
+        end
+
+      :space ->
+        %{app | modal_dropdown: %{dd | search: dd.search <> " ", index: 0}}
+
+      k when k in [:down, :tab] ->
+        next_idx = if count > 0, do: rem(cur_idx + 1, count), else: 0
+        %{app | modal_dropdown: %{dd | index: next_idx}}
+
+      k when k in [:up, :shift_tab] ->
+        prev_idx = if count > 0, do: rem(cur_idx - 1 + count, count), else: 0
+        %{app | modal_dropdown: %{dd | index: prev_idx}}
+
+      :backspace ->
+        len = String.length(dd.search)
+
+        %{
+          app
+          | modal_dropdown: %{dd | search: String.slice(dd.search, 0, max(0, len - 1)), index: 0}
+        }
+
+      k when is_binary(k) ->
+        if String.printable?(k) do
+          %{app | modal_dropdown: %{dd | search: dd.search <> k, index: 0}}
+        else
+          app
+        end
+
+      _ ->
+        app
+    end
+  end
 
   defp editor_mutating_key?(key) when is_binary(key), do: true
 
@@ -5205,7 +5568,7 @@ defmodule Strata.UI.App do
         }
 
       {:error, reason} ->
-        %{app | status_message: "❌ Export failed: #{inspect(reason)}"}
+        %{app | status_message: "❌ Export failed: #{Strata.Formatter.format_error(reason)}"}
     end
   end
 
@@ -5247,6 +5610,55 @@ defmodule Strata.UI.App do
     %{app | modals: [%{picker | selected_index: next} | rest]}
   end
 
+  def handle_mouse(
+        %__MODULE__{modals: [_ | _], modal_dropdown: %{} = dd, window_size: ws} = app,
+        {:scroll, dir, _x, _y}
+      ) do
+    dd_data = Renderer.modal_dropdown_data(app, ws)
+    items = (dd_data && dd_data.items) || []
+    count = length(items)
+
+    cond do
+      count == 0 ->
+        app
+
+      dir in [:up, :scroll_up] ->
+        %{app | modal_dropdown: %{dd | index: max(0, dd.index - 1)}}
+
+      dir in [:down, :scroll_down] ->
+        %{app | modal_dropdown: %{dd | index: min(count - 1, dd.index + 1)}}
+
+      true ->
+        app
+    end
+  end
+
+  def handle_mouse(
+        %__MODULE__{modals: [top | rest], modal_dropdown: %{} = dd, window_size: ws} = app,
+        {:click, x, y}
+      ) do
+    case Renderer.modal_dropdown_data(app, ws) do
+      %{rect: dd_rect, items: items, scroll_top: scroll_top} when is_map(dd_rect) ->
+        if inside_area?(x, y, dd_rect) do
+          rel_y = y - dd_rect.y - 1
+
+          if rel_y >= 0 do
+            case Enum.at(items, scroll_top + rel_y) do
+              %{value: val} -> apply_modal_dropdown_choice(app, top, rest, dd.field, val)
+              nil -> app
+            end
+          else
+            app
+          end
+        else
+          %{app | modal_dropdown: nil}
+        end
+
+      _ ->
+        %{app | modal_dropdown: nil}
+    end
+  end
+
   def handle_mouse(%__MODULE__{modals: [_ | _]} = app, {:scroll, _dir, _x, _y}) do
     # Modal scroll lock: prevent scroll bleed into background panes
     app
@@ -5258,8 +5670,11 @@ defmodule Strata.UI.App do
     if inside_area?(x, y, modal_area) do
       handle_modal_click(app, x, y, modal_area)
     else
-      {_popped, updated} = pop_modal(app)
-      updated
+      {popped, updated} = pop_modal(app)
+
+      if is_struct(popped, ConfirmModal),
+        do: %{updated | pending_commit_action: nil},
+        else: updated
     end
   end
 
@@ -5599,7 +6014,7 @@ defmodule Strata.UI.App do
     end
   end
 
-  defp handle_modal_click(%__MODULE__{modals: [top | rest]} = app, _x, y, modal_area) do
+  defp handle_modal_click(%__MODULE__{modals: [top | rest]} = app, x, y, modal_area) do
     rel_y = y - modal_area.y - 1
 
     cond do
@@ -5638,93 +6053,79 @@ defmodule Strata.UI.App do
             app
         end
 
-      match?(%ConnectionModal{}, top) and rel_y >= 0 ->
-        fields = ConnectionModal.visible_fields(top.driver)
+      (match?(%ConnectionModal{}, top) or
+         match?(%AISettingsModal{}, top) or match?(%UpdateModal{}, top) or
+         match?(%ExportModal{}, top) or match?(%ConfirmModal{}, top)) and rel_y >= 0 ->
+        handle_form_modal_click(app, top, rest, x, rel_y, modal_area)
 
-        case Enum.at(fields, rel_y) do
-          nil ->
-            app
+      match?(%{type: :confirm_delete_connection}, top) and rel_y == 5 ->
+        rel_x = x - modal_area.x - 1
+        inner_w = max(2, modal_area.width - 2)
 
-          field when field in [:save_button, :cancel_button] ->
-            updated_top = %{top | focused_field: field}
-            handle_key(%{app | modals: [updated_top | rest]}, :enter)
-
-          :test_button ->
-            updated_top = %{top | focused_field: :test_button}
-            test_connection_async(%{app | modals: [updated_top | rest]})
-
-          field ->
-            %{app | modals: [%{top | focused_field: field} | rest]}
-        end
-
-      match?(%SSHModal{}, top) and rel_y >= 0 ->
-        fields = SSHModal.visible_fields(top)
-
-        case Enum.at(fields, rel_y) do
-          nil ->
-            app
-
-          field when field in [:save_button, :delete_button, :cancel_button] ->
-            updated_top = %{top | focused_field: field}
-            handle_key(%{app | modals: [updated_top | rest]}, :enter)
-
-          :test_button ->
-            updated_top = %{top | focused_field: :test_button}
-            test_ssh_async(%{app | modals: [updated_top | rest]})
-
-          field ->
-            %{app | modals: [%{top | focused_field: field} | rest]}
-        end
-
-      match?(%AISettingsModal{}, top) and rel_y >= 0 ->
-        fields = AISettingsModal.visible_fields()
-
-        case Enum.at(fields, rel_y) do
-          nil ->
-            app
-
-          field when field in [:save_button, :cancel_button] ->
-            updated_top = %{top | focused_field: field}
-            handle_key(%{app | modals: [updated_top | rest]}, :enter)
-
-          :test_button ->
-            updated_top = %{top | focused_field: :test_button}
-            test_ai_cli_async(%{app | modals: [updated_top | rest]})
-
-          field ->
-            %{app | modals: [%{top | focused_field: field} | rest]}
-        end
-
-      match?(%UpdateModal{}, top) and rel_y >= 0 ->
-        fields = UpdateModal.rendered_fields(top)
-
-        case Enum.at(fields, rel_y) do
-          %{key: field} when field in [:check_button, :update_button, :close_button] ->
-            updated_top = %{top | focused_field: field}
-            handle_key(%{app | modals: [updated_top | rest]}, :enter)
-
-          _ ->
-            app
-        end
-
-      match?(%ExportModal{}, top) and rel_y >= 0 ->
-        fields = [:format, :file_path, :scope, :export_button, :cancel_button]
-
-        case Enum.at(fields, rel_y) do
-          nil ->
-            app
-
-          field when field in [:export_button, :cancel_button] ->
-            updated_top = %{top | focused_field: field}
-            handle_key(%{app | modals: [updated_top | rest]}, :enter)
-
-          field ->
-            %{app | modals: [%{top | focused_field: field} | rest]}
+        if rel_x < div(inner_w, 2) do
+          handle_key(app, "y")
+        else
+          handle_key(app, :esc)
         end
 
       true ->
         app
     end
+  end
+
+  defp handle_form_modal_click(app, top, rest, x, rel_y, modal_area) do
+    fields =
+      modal_area
+      |> then(&Strata.UI.Renderer.modal_rendered_info(top, &1))
+      |> Map.get(:fields, [])
+
+    {input_fields, button_fields} = Enum.split_with(fields, &(&1.type != :button))
+    button_row_y = length(input_fields) + 1
+
+    cond do
+      rel_y < length(input_fields) ->
+        case Enum.at(input_fields, rel_y) do
+          %{type: :info} ->
+            app
+
+          %{type: :select, key: key} ->
+            updated_top = %{top | focused_field: key}
+            open_modal_dropdown(%{app | modals: [updated_top | rest]}, updated_top, key)
+
+          %{key: key} ->
+            %{app | modals: [%{top | focused_field: key} | rest]}
+
+          nil ->
+            app
+        end
+
+      rel_y == button_row_y and button_fields != [] ->
+        rel_x = x - modal_area.x - 1
+        layout = Strata.UI.Renderer.modal_button_bar_layout(button_fields, modal_area.width - 2)
+
+        case Enum.find(layout.all, fn item -> rel_x >= item.start_x and rel_x <= item.end_x end) do
+          %{key: btn_key} -> activate_modal_button(app, top, rest, btn_key)
+          nil -> app
+        end
+
+      true ->
+        app
+    end
+  end
+
+  defp activate_modal_button(app, %ConnectionModal{} = top, rest, :test_button) do
+    updated_top = %{top | focused_field: :test_button}
+    test_connection_async(%{app | modals: [updated_top | rest]})
+  end
+
+  defp activate_modal_button(app, %AISettingsModal{} = top, rest, :test_button) do
+    updated_top = %{top | focused_field: :test_button}
+    test_ai_cli_async(%{app | modals: [updated_top | rest]})
+  end
+
+  defp activate_modal_button(app, top, rest, btn_key) do
+    updated_top = %{top | focused_field: btn_key}
+    handle_key(%{app | modals: [updated_top | rest]}, :enter)
   end
 
   defp collapse_transient_filter_bar(app) do
@@ -6012,17 +6413,21 @@ defmodule Strata.UI.App do
   """
   @spec clear_active_sort(t()) :: t()
   def clear_active_sort(%__MODULE__{datagrid_state: %DataGrid{} = grid} = app) do
-    cleared = %{grid | sort_by: nil}
+    if dirty_grid?(grid) do
+      %{app | status_message: "⚠️ Commit (Ctrl+S) or Revert (Ctrl+Z) changes before clearing sort"}
+    else
+      cleared = %{grid | sort_by: nil}
 
-    cond do
-      is_map(app.active_filter) ->
-        apply_smart_filter(%{app | datagrid_state: cleared})
+      cond do
+        is_map(app.active_filter) ->
+          apply_smart_filter(%{app | datagrid_state: cleared})
 
-      app.active_view == :table_view and is_binary(app.selected_table) ->
-        refresh_active_table(%{app | datagrid_state: cleared})
+        app.active_view == :table_view and is_binary(app.selected_table) ->
+          refresh_active_table(%{app | datagrid_state: cleared}, force: true)
 
-      true ->
-        %{app | datagrid_state: cleared, status_message: "Cleared sort"}
+        true ->
+          %{app | datagrid_state: cleared, status_message: "Cleared sort"}
+      end
     end
   end
 

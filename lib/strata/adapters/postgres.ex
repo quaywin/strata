@@ -16,19 +16,37 @@ defmodule Strata.Adapter.Postgres do
   def connect(%ConnectionProfile{} = profile, host, port) do
     _ = Application.ensure_all_started(:postgrex)
 
-    pg_opts =
-      [
-        hostname: host || "localhost",
-        port: port || default_port(),
-        username: profile.username || "postgres",
-        password: profile.password || "",
-        database: profile.database || "postgres"
-      ] ++ Map.to_list(profile.options || %{})
-
-    case Postgrex.start_link(pg_opts) do
+    case Postgrex.start_link(pg_opts(profile, host, port)) do
       {:ok, pid} -> {:ok, pid}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @impl true
+  def test_connection(%ConnectionProfile{} = profile, host, port) do
+    _ = Application.ensure_all_started(:postgrex)
+    opts = profile |> pg_opts(host, port) |> Postgrex.Utils.default_opts()
+
+    Strata.Adapter.run_isolated(fn ->
+      case Postgrex.Protocol.connect(opts) do
+        {:ok, state} ->
+          _ = Postgrex.Protocol.disconnect(:normal, state)
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end)
+  end
+
+  defp pg_opts(%ConnectionProfile{} = profile, host, port) do
+    [
+      hostname: host || "localhost",
+      port: port || default_port(),
+      username: profile.username || "postgres",
+      password: profile.password || "",
+      database: profile.database || "postgres"
+    ] ++ Map.to_list(profile.options || %{})
   end
 
   @impl true

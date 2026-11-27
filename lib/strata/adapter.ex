@@ -12,11 +12,52 @@ defmodule Strata.Adapter do
   @callback probe_query() :: String.t()
   @callback connect(profile :: ConnectionProfile.t(), host :: String.t(), port :: integer()) ::
               {:ok, conn()} | {:error, term()}
+  @callback test_connection(
+              profile :: ConnectionProfile.t(),
+              host :: String.t(),
+              port :: integer()
+            ) :: :ok | {:error, term()}
   @callback execute_query(conn :: conn(), sql :: String.t(), params :: list()) ::
               {:ok, %{columns: [String.t()], rows: [list()]}} | {:error, term()}
   @callback list_schemas(conn :: conn()) :: [String.t()]
   @callback list_tables(conn :: conn(), schema :: String.t()) :: [String.t()]
   @callback close(conn :: conn()) :: :ok
+
+  @optional_callbacks [test_connection: 3]
+
+  @doc """
+  Executes `fun` inside an isolated monitored process so driver-level `trap_exit`
+  changes or crashes never leak into the caller and always return `{:error, reason}`.
+  """
+  @spec run_isolated((-> :ok | {:ok, term()} | {:error, term()})) ::
+          :ok | {:ok, term()} | {:error, term()}
+  def run_isolated(fun) when is_function(fun, 0) do
+    parent = self()
+    ref = make_ref()
+
+    {_pid, mon_ref} =
+      spawn_monitor(fn ->
+        result =
+          try do
+            fun.()
+          rescue
+            e -> {:error, e}
+          catch
+            kind, reason -> {:error, {kind, reason}}
+          end
+
+        send(parent, {ref, result})
+      end)
+
+    receive do
+      {^ref, result} ->
+        Process.demonitor(mon_ref, [:flush])
+        result
+
+      {:DOWN, ^mon_ref, :process, _pid, reason} ->
+        {:error, reason}
+    end
+  end
 
   @doc """
   Returns list of all supported driver atoms.

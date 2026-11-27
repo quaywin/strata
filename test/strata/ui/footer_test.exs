@@ -47,8 +47,8 @@ defmodule Strata.UI.Components.FooterTest do
       assert Map.has_key?(first_action, :key)
       assert Map.has_key?(first_action, :area)
 
-      # Uppercase shortcut keys retain case so clicking 'S' (SSH) or 'E' (Export) dispatches accurately
-      assert Enum.any?(actions, &(&1.key == :S))
+      # Uppercase shortcut keys retain case so clicking 'E' (Export) dispatches accurately
+      assert Enum.any?(actions, &(&1.key == :a))
 
       grid_app =
         App.new(

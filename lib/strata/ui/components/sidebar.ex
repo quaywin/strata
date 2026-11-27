@@ -153,7 +153,7 @@ defmodule Strata.UI.Components.Sidebar do
 
       cond do
         filtered_children != [] ->
-          [%{node | expanded?: true, children: filtered_children}]
+          [Map.merge(node, %{expanded?: true, children: filtered_children})]
 
         label_match? ->
           [node]
@@ -274,9 +274,6 @@ defmodule Strata.UI.Components.Sidebar do
 
       k when k in ["d", "D"] ->
         delete_selected_connection(app)
-
-      k when k in ["s", "S"] ->
-        Strata.UI.App.push_modal(app, Strata.UI.Components.SSHModal.new())
 
       "/" ->
         %{app | sidebar_filter_active: true, sidebar_filter: Map.get(app, :sidebar_filter, "")}
@@ -456,8 +453,7 @@ defmodule Strata.UI.Components.Sidebar do
         {:ok, cols, rows}
 
       {:error, reason} ->
-        msg = if is_binary(reason), do: reason, else: inspect(reason)
-        {:error, msg}
+        {:error, Strata.Formatter.format_error(reason)}
 
       _ ->
         {:error, "Failed to query table"}

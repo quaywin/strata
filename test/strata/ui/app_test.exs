@@ -79,7 +79,7 @@ defmodule Strata.UI.AppTest do
       app = App.push_modal(app, modal1)
       assert app.modals == [modal1]
 
-      modal2 = Strata.UI.Components.SSHModal.new()
+      modal2 = Strata.UI.Components.ExportModal.new()
       app = App.push_modal(app, modal2)
       assert app.modals == [modal2, modal1]
 
@@ -567,7 +567,7 @@ defmodule Strata.UI.AppTest do
       assert Strata.UI.KeyRegistry.determine_context(App.new(focus: :sidebar)) == :sidebar
       assert Strata.UI.KeyRegistry.determine_context(App.new(focus: :editor)) == :editor
 
-      app_modal = App.new() |> App.push_modal(Strata.UI.Components.SSHModal.new())
+      app_modal = App.new() |> App.push_modal(Strata.UI.Components.ConnectionModal.new())
       assert Strata.UI.KeyRegistry.determine_context(app_modal) == :modal
 
       assert 42 == Strata.UI.Cache.fetch(:test_ns, :k1, 2, fn -> 42 end)
@@ -662,6 +662,24 @@ defmodule Strata.UI.AppTest do
       {:noreply, ok_app} = App.handle_info({:connection_test_finished, :ok}, app)
       assert hd(ok_app.modals).status == :ok
 
+      err_app_in =
+        App.new() |> App.push_modal(Strata.UI.Components.ConnectionModal.new(status: :testing))
+
+      {:noreply, err_app} =
+        App.handle_info(
+          {:connection_test_finished,
+           {:error,
+            %DBConnection.ConnectionError{
+              message: "tcp connect (127.0.0.1:5432): connection refused - :econnrefused"
+            }}},
+          err_app_in
+        )
+
+      assert hd(err_app.modals).status == :error
+
+      assert hd(err_app.modals).status_message ==
+               "❌ Connection failed: tcp connect (127.0.0.1:5432): connection refused - :econnrefused"
+
       app_f = App.new()
 
       {:noreply, filtered_app} =
@@ -673,11 +691,6 @@ defmodule Strata.UI.AppTest do
 
       assert filtered_app.datagrid_state.rows == [[10]]
       assert filtered_app.status_message =~ "Filter applied (1 rows)"
-
-      sm = Strata.UI.Components.SSHModal.new(status: :testing)
-      ssh_app = App.new() |> App.push_modal(sm)
-      {:noreply, ok_ssh_app} = App.handle_info({:ssh_test_finished, :ok}, ssh_app)
-      assert hd(ok_ssh_app.modals).status == :ok
     end
 
     test "allows typing 'q' and 'Q' in editor and modals while quitting in navigation mode" do
@@ -1650,11 +1663,7 @@ defmodule Strata.UI.AppTest do
       deleted_from_browsing = App.handle_key(grid_app, "d")
       assert MapSet.member?(deleted_from_browsing.datagrid_state.pending_deletes, 0)
 
-      # 5. Sidebar lowercase 's' opens SSHModal just like 'S'
-      ssh_app = App.handle_key(App.new(focus: :sidebar), "s")
-      assert match?([%Strata.UI.Components.SSHModal{}], ssh_app.modals)
-
-      # 6. Ctrl+P opens context-aware ActionsModal from :editor and Ctrl+K clears SQL editor
+      # 5. Ctrl+P opens context-aware ActionsModal from :editor and Ctrl+K clears SQL editor
       editor_app =
         App.new(focus: :editor)
         |> put_in([Access.key(:tabs), Access.at(0), :content], "SELECT * FROM users")
@@ -1669,6 +1678,291 @@ defmodule Strata.UI.AppTest do
       active_tab = Enum.find(cleared_editor.tabs, &(&1.id == cleared_editor.active_tab_id))
       assert active_tab.content == ""
       assert active_tab.cursor == {0, 0}
+    end
+
+    test "clicks horizontal modal buttons accurately across ConnectionModal and ExportModal" do
+      cm = Strata.UI.Components.ConnectionModal.new(name: "Click DB")
+      app = App.new(window_size: {120, 40}) |> App.push_modal(cm)
+      area = Strata.UI.Renderer.modal_area_for(app, {120, 40})
+      fields = Strata.UI.Components.ConnectionModal.render(cm, area).fields
+      {inputs, buttons} = Enum.split_with(fields, &(&1.type != :button))
+      layout = Strata.UI.Renderer.modal_button_bar_layout(buttons, area.width - 2)
+      btn_y = area.y + 1 + length(inputs) + 1
+
+      cancel_btn = Enum.find(layout.all, &(&1.key == :cancel_button))
+      cancel_x = area.x + 1 + cancel_btn.start_x + 2
+      after_cancel = App.handle_mouse(app, {:click, cancel_x, btn_y})
+      assert after_cancel.modals == []
+
+      test_btn = Enum.find(layout.all, &(&1.key == :test_button))
+      test_x = area.x + 1 + test_btn.start_x + 2
+      after_test = App.handle_mouse(app, {:click, test_x, btn_y})
+      assert hd(after_test.modals).status == :testing
+      assert hd(after_test.modals).focused_field == :test_button
+    end
+
+    test "preserves tree expansion cleanly on :connection_schema_loaded with flattened table nodes (no :expanded? key)" do
+      table_node = %{
+        id: "conn1_public_tbl_users",
+        label: "users",
+        type: :table,
+        profile_id: "conn1",
+        schema: "public"
+      }
+
+      conn_node = %{
+        id: "conn1",
+        label: "Prod DB (PG)",
+        type: :connection,
+        expanded?: true,
+        children: [table_node]
+      }
+
+      app = App.new(sidebar_nodes: [conn_node])
+
+      {:noreply, updated_app} =
+        App.handle_info({:connection_schema_loaded, "conn1", conn_node}, app)
+
+      assert [%{id: "conn1", expanded?: true, children: [%{id: "conn1_public_tbl_users"}]}] =
+               updated_app.sidebar_nodes
+    end
+
+    test "prompts ConfirmModal before closing dirty table tab or quitting and handles discard/cancel/commit" do
+      alias Strata.UI.Components.{ConfirmModal, DataGrid}
+
+      dirty_grid =
+        DataGrid.new(["id", "name"], [[1, "Alice"]], primary_keys: ["id"])
+        |> DataGrid.stage_cell_edit(0, 1, "Alicia")
+
+      table_tab = %{
+        id: "tab_tbl_dirty",
+        kind: :table,
+        name: "users",
+        table_name: "users",
+        schema: "main",
+        profile_id: nil,
+        datagrid_state: dirty_grid
+      }
+
+      app =
+        App.new(
+          tabs: [table_tab],
+          active_tab_id: "tab_tbl_dirty",
+          active_view: :table_view,
+          selected_table: "users",
+          datagrid_state: dirty_grid,
+          focus: :datagrid
+        )
+
+      # 1. Ctrl+W on dirty tab pushes ConfirmModal instead of discarding edits
+      prompted = App.handle_key(app, {:ctrl, "w"})
+
+      assert [%ConfirmModal{kind: :close_dirty_tab, tab_id: "tab_tbl_dirty", dirty_count: 1}] =
+               prompted.modals
+
+      assert length(prompted.tabs) == 1
+
+      # 2. Esc cancels and keeps tab + staged edits intact
+      cancelled = App.handle_key(prompted, :esc)
+      assert cancelled.modals == []
+      assert length(cancelled.tabs) == 1
+      assert DataGrid.dirty_count(cancelled.datagrid_state) == 1
+
+      # 3. Inline editing also triggers ConfirmModal when closing via close_tab
+      inline_app = %{
+        app
+        | datagrid_state: %{DataGrid.new(["id", "name"], [[1, "Alice"]]) | editing_cell: {0, 1}}
+      }
+
+      inline_prompted = App.close_tab(inline_app, "tab_tbl_dirty")
+
+      assert [%ConfirmModal{kind: :close_dirty_tab, inline_editing?: true}] =
+               inline_prompted.modals
+
+      # 4. Choosing Discard & Close closes the tab
+      discard_focused =
+        App.handle_key(
+          %{prompted | modals: [%{hd(prompted.modals) | focused_field: :discard_button}]},
+          :enter
+        )
+
+      assert discard_focused.modals == []
+      assert discard_focused.tabs == []
+
+      # 5. Pressing 'q' when dirty tab exists opens ConfirmModal; Discard & Quit stops app
+      {:noreply, quit_prompted} =
+        App.handle_event(%ExRatatui.Event.Key{code: "q", modifiers: []}, app)
+
+      assert [%ConfirmModal{kind: :quit_with_dirty_tabs, can_commit?: true}] =
+               quit_prompted.modals
+
+      discard_quit_app = %{
+        quit_prompted
+        | modals: [%{hd(quit_prompted.modals) | focused_field: :discard_button}]
+      }
+
+      assert {:stop, stopped} =
+               App.handle_event(
+                 %ExRatatui.Event.Key{code: "enter", modifiers: []},
+                 discard_quit_app
+               )
+
+      assert stopped.quit_requested? == true
+
+      # 6. Commit finishing for :close_dirty_tab closes the tab cleanly; error keeps modal & edits
+      err_state = %{
+        prompted
+        | pending_commit_action: {:close_tab, "tab_tbl_dirty"},
+          modals: [
+            %{hd(prompted.modals) | status: :saving, status_message: "⏳ Committing changes..."}
+          ]
+      }
+
+      {:noreply, rolled_back} =
+        App.handle_info(
+          {:commit_finished, 1, "p1", "main", "users", {:error, "Constraint failed"}},
+          err_state
+        )
+
+      assert [%ConfirmModal{status: :error, status_message: msg}] = rolled_back.modals
+      assert msg =~ "Constraint failed"
+      assert length(rolled_back.tabs) == 1
+
+      ok_state = %{
+        prompted
+        | pending_commit_action: {:close_tab, "tab_tbl_dirty"},
+          modals: [
+            %{hd(prompted.modals) | status: :saving, status_message: "⏳ Committing changes..."}
+          ]
+      }
+
+      {:noreply, committed_closed} =
+        App.handle_info({:commit_finished, 2, "p1", "main", "users", {:ok, 1}}, ok_state)
+
+      assert committed_closed.modals == []
+      assert committed_closed.tabs == []
+      assert committed_closed.status_message =~ "Committed 1 statement(s) and closed 'users'"
+    end
+
+    test "protects dirty table on refresh/filter/clear-sort" do
+      alias Strata.UI.Components.{ConfirmModal, DataGrid}
+
+      dirty_grid =
+        DataGrid.new(["id", "name"], [[1, "Alice"]],
+          primary_keys: ["id"],
+          sort_by: {"name", :asc}
+        )
+        |> DataGrid.stage_cell_edit(0, 1, "Alicia")
+
+      table_tab = %{
+        id: "tab_tbl_guard",
+        kind: :table,
+        name: "users",
+        table_name: "users",
+        schema: "main",
+        profile_id: nil,
+        datagrid_state: dirty_grid
+      }
+
+      app =
+        App.new(
+          tabs: [table_tab],
+          active_tab_id: "tab_tbl_guard",
+          active_view: :table_view,
+          selected_table: "users",
+          datagrid_state: dirty_grid,
+          active_filter: %{
+            mode: :builder,
+            column: "name",
+            op: :contains,
+            value: "Al",
+            summary: "name contains Al"
+          },
+          focus: :datagrid
+        )
+
+      # 1. Refresh on dirty table opens ConfirmModal instead of discarding
+      refreshed = App.refresh_active_table(app)
+      assert [%ConfirmModal{kind: :refresh_dirty_table, tab_name: "users"}] = refreshed.modals
+      assert DataGrid.dirty_count(refreshed.datagrid_state) == 1
+
+      # 2. Filter apply, filter clear, and clear_active_sort preserve edits and warn
+      filtered =
+        App.handle_key(
+          %{app | filter_bar_open: true, filter_bar_focused: true, filter_bar_text: "Al"},
+          :enter
+        )
+
+      assert filtered.status_message =~ "before filtering"
+      assert DataGrid.dirty_count(filtered.datagrid_state) == 1
+
+      cleared_filter = App.clear_table_filter(app)
+      assert cleared_filter.status_message =~ "before clearing filter"
+      assert cleared_filter.active_filter != nil
+      assert DataGrid.dirty_count(cleared_filter.datagrid_state) == 1
+
+      cleared_sort = App.clear_active_sort(app)
+      assert cleared_sort.status_message =~ "before clearing sort"
+      assert DataGrid.dirty_count(cleared_sort.datagrid_state) == 1
+    end
+
+    test "supports opening, filtering, selecting via keyboard/mouse, and Esc-closing floating modal dropdowns" do
+      # 1. ConnectionModal :driver — Enter opens dropdown, typing filters, Enter picks sqlite
+      cm = Strata.UI.Components.ConnectionModal.new(focused_field: :driver)
+      app = App.new(window_size: {120, 40}) |> App.push_modal(cm)
+
+      opened = App.handle_key(app, :enter)
+      assert opened.modal_dropdown == %{field: :driver, index: 0, search: ""}
+
+      # Esc closes only the dropdown, keeping the modal open
+      dismissed = App.handle_key(opened, :esc)
+      assert dismissed.modal_dropdown == nil
+      assert [%Strata.UI.Components.ConnectionModal{}] = dismissed.modals
+
+      # Reopen, type "sq" to filter to sqlite, then Enter selects sqlite
+      chosen =
+        dismissed
+        |> App.handle_key(:enter)
+        |> App.handle_key("s")
+        |> App.handle_key("q")
+        |> App.handle_key(:enter)
+
+      assert chosen.modal_dropdown == nil
+      assert [%Strata.UI.Components.ConnectionModal{driver: :sqlite}] = chosen.modals
+
+      # Left/Right quick-cycling continues to work directly when dropdown is closed
+      cycled = App.handle_key(chosen, :right)
+      assert cycled.modal_dropdown == nil
+      assert [%Strata.UI.Components.ConnectionModal{driver: :postgres}] = cycled.modals
+
+      # 2. Mouse click on ExportModal :format row opens dropdown, clicking option applies it
+      export_app =
+        App.new(window_size: {120, 40})
+        |> App.push_modal(Strata.UI.Components.ExportModal.new())
+
+      area = Strata.UI.Renderer.modal_area_for(export_app, {120, 40})
+      clicked_open = App.handle_mouse(export_app, {:click, area.x + 5, area.y + 1})
+      assert %{field: :format} = clicked_open.modal_dropdown
+
+      dd_data = Strata.UI.Renderer.modal_dropdown_data(clicked_open, {120, 40})
+      # Row 1 inside dropdown is "json (.json)"
+      clicked_json =
+        App.handle_mouse(clicked_open, {:click, dd_data.rect.x + 3, dd_data.rect.y + 2})
+
+      assert clicked_json.modal_dropdown == nil
+
+      assert [%Strata.UI.Components.ExportModal{format: :json, file_path: "export.json"}] =
+               clicked_json.modals
+
+      # 3. AISettingsModal :context_scope dropdown keyboard selection
+      ai_app =
+        App.new(window_size: {120, 40})
+        |> App.push_modal(Strata.UI.Components.AISettingsModal.new(focused_field: :context_scope))
+        |> App.handle_key(:enter)
+        |> App.handle_key(:down)
+        |> App.handle_key(:enter)
+
+      assert [%Strata.UI.Components.AISettingsModal{context_scope: :focused_only}] = ai_app.modals
     end
   end
 end

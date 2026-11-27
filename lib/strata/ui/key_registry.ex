@@ -43,7 +43,8 @@ defmodule Strata.UI.KeyRegistry do
     case determine_context(app) do
       :modal ->
         [
-          {"Tab", "Next Field"},
+          {"Tab", "Next"},
+          {"←/→", "Option/Btn"},
           {"Enter", "Confirm"},
           {"Esc", "Cancel"}
         ]
@@ -61,7 +62,6 @@ defmodule Strata.UI.KeyRegistry do
           {"Tab", "Pane"},
           {"Ctrl+T", "New SQL Tab"},
           {"a", "Add Conn"},
-          {"S", "SSH"},
           {"r", "Refresh"},
           {"/", "Find"},
           {"?", "Actions"}

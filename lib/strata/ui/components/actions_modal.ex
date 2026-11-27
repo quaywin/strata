@@ -41,8 +41,7 @@ defmodule Strata.UI.Components.ActionsModal do
           datagrid_items(grid, data_source, inspector_open?) ++
             [
               %{id: :ai_settings, label: "AI Assistant Settings", shortcut: "Actions"},
-              update_item,
-              %{id: :sidebar_ssh, label: "SSH Tunnel Profiles", shortcut: "Sidebar S"}
+              update_item
             ] ++
             navigation_items(data_source)
       end
@@ -68,7 +67,6 @@ defmodule Strata.UI.Components.ActionsModal do
       %{id: :sidebar_add_conn, label: "Add Database Connection", shortcut: "a"},
       %{id: :sidebar_edit_conn, label: "Edit Selected Connection", shortcut: "e"},
       %{id: :sidebar_delete_conn, label: "Delete Selected Connection", shortcut: "d"},
-      %{id: :sidebar_ssh, label: "SSH Tunnel Profiles", shortcut: "s / S"},
       %{id: :sidebar_refresh, label: "Refresh Connection Schema", shortcut: "r / F5"},
       %{id: :sidebar_filter, label: "Filter Sidebar Tree", shortcut: "/"},
       %{id: :sidebar_expand_all, label: "Expand All Nodes", shortcut: "o"},

@@ -284,6 +284,7 @@ defmodule Strata.ConfigStore do
       "username" => p.username,
       "password" => p.password,
       "ssh_profile_id" => p.ssh_profile_id,
+      "ssh" => ssh_to_map(p.ssh),
       "options" => stringify_keys(p.options || %{})
     }
   end
@@ -308,9 +309,42 @@ defmodule Strata.ConfigStore do
       username: Map.get(map, "username", ""),
       password: Map.get(map, "password", ""),
       ssh_profile_id: Map.get(map, "ssh_profile_id"),
+      ssh: ssh_from_map(Map.get(map, "ssh")),
       options: symbolize_keys(Map.get(map, "options", %{}))
     }
   end
+
+  defp ssh_to_map(nil), do: nil
+
+  defp ssh_to_map(ssh) when is_map(ssh) do
+    %{
+      "host" => Map.get(ssh, :host) || Map.get(ssh, "host"),
+      "port" => Map.get(ssh, :port) || Map.get(ssh, "port") || 22,
+      "username" => Map.get(ssh, :username) || Map.get(ssh, "username"),
+      "password" => Map.get(ssh, :password) || Map.get(ssh, "password"),
+      "identity_file" => Map.get(ssh, :identity_file) || Map.get(ssh, "identity_file")
+    }
+  end
+
+  defp ssh_from_map(nil), do: nil
+
+  defp ssh_from_map(ssh) when is_map(ssh) do
+    host = Map.get(ssh, "host") || Map.get(ssh, :host)
+
+    if is_binary(host) and String.trim(host) != "" do
+      %{
+        host: String.trim(host),
+        port: Map.get(ssh, "port") || Map.get(ssh, :port) || 22,
+        username: Map.get(ssh, "username") || Map.get(ssh, :username) || "",
+        password: Map.get(ssh, "password") || Map.get(ssh, :password) || "",
+        identity_file: Map.get(ssh, "identity_file") || Map.get(ssh, :identity_file) || ""
+      }
+    else
+      nil
+    end
+  end
+
+  defp ssh_from_map(_), do: nil
 
   defp default_port(:postgres), do: 5432
   defp default_port(:mysql), do: 3306

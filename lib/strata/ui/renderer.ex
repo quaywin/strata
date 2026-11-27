@@ -1857,16 +1857,23 @@ defmodule Strata.UI.Renderer do
     alias ExRatatui.Text.{Line, Span}
 
     footer_chunk = Footer.render(app, area)
-    status = Map.get(footer_chunk, :status_message)
+    raw_status = Map.get(footer_chunk, :status_message)
+
+    status =
+      if is_binary(raw_status) do
+        String.replace(raw_status, ~r/\s*\r?\n\s*/, " ")
+      else
+        raw_status
+      end
 
     line =
       if is_binary(status) and status != "" and status != "Ready" do
         status_style =
           cond do
-            String.contains?(status, ["❌", "Error", "failed"]) ->
+            String.contains?(status, ["❌", "Error", "error", "failed", "rolled back"]) ->
               %Style{fg: :white, bg: :red, modifiers: [:bold]}
 
-            String.contains?(status, ["⏳", "Loading", "Executing"]) ->
+            String.contains?(status, ["⏳", "⚠️", "Loading", "Executing"]) ->
               %Style{fg: :black, bg: :yellow, modifiers: [:bold]}
 
             true ->
@@ -1934,19 +1941,30 @@ defmodule Strata.UI.Renderer do
           {80, max(10, min(22, item_cnt + 4))}
 
         match?(%Strata.UI.Components.ExportModal{}, top) ->
-          {74, 18}
+          dynamic_modal_dims(74, 18, 3, top.status_message, elem(window_size, 1))
 
         match?(%Strata.UI.Components.ConnectionModal{}, top) ->
-          {72, 22}
+          input_count =
+            Enum.count(
+              Strata.UI.Components.ConnectionModal.visible_fields(top),
+              &(&1 not in [:test_button, :save_button, :cancel_button])
+            )
 
-        match?(%Strata.UI.Components.SSHModal{}, top) ->
-          {72, 22}
+          base_h =
+            if top.ssh_mode == :manual and top.driver != :sqlite,
+              do: max(22, input_count + 4),
+              else: 22
+
+          dynamic_modal_dims(72, base_h, input_count, top.status_message, elem(window_size, 1))
 
         match?(%Strata.UI.Components.AISettingsModal{}, top) ->
-          {74, 18}
+          dynamic_modal_dims(74, 18, 4, top.status_message, elem(window_size, 1))
 
         match?(%Strata.UI.Components.UpdateModal{}, top) ->
-          {76, 18}
+          dynamic_modal_dims(76, 18, 5, top.status_message, elem(window_size, 1))
+
+        match?(%Strata.UI.Components.ConfirmModal{}, top) ->
+          dynamic_modal_dims(72, 12, 2, top.status_message, elem(window_size, 1))
 
         match?(%{type: :confirm_delete_connection}, top) ->
           {54, 9}
@@ -2022,29 +2040,7 @@ defmodule Strata.UI.Renderer do
         modal_area = modal_area_for(app, window_size)
         m_rect = to_rect(modal_area)
 
-        rendered_info =
-          case top do
-            %Strata.UI.Components.ConnectionModal{} = conn_modal ->
-              Strata.UI.Components.ConnectionModal.render(conn_modal, modal_area)
-
-            %Strata.UI.Components.ExportModal{} = export_modal ->
-              Strata.UI.Components.ExportModal.render(export_modal, modal_area)
-
-            %Strata.UI.Components.SSHModal{} = ssh_modal ->
-              Strata.UI.Components.SSHModal.render(ssh_modal, modal_area)
-
-            %Strata.UI.Components.AISettingsModal{} = ai_settings_modal ->
-              Strata.UI.Components.AISettingsModal.render(ai_settings_modal, modal_area)
-
-            %Strata.UI.Components.UpdateModal{} = update_modal ->
-              Strata.UI.Components.UpdateModal.render(update_modal, modal_area)
-
-            map when is_map(map) ->
-              map
-
-            other ->
-              %{title: "Modal", content: inspect(other)}
-          end
+        rendered_info = modal_rendered_info(top, modal_area)
 
         alias ExRatatui.Style
         alias ExRatatui.Text.{Line, Span}
@@ -2056,52 +2052,20 @@ defmodule Strata.UI.Renderer do
         {content_lines, modal_regions} =
           case Map.get(rendered_info, :fields) do
             fields when is_list(fields) ->
-              lines =
-                Enum.map(fields, fn f ->
-                  focused? = f.key == focused
-                  prefix = if focused?, do: " ▸ ", else: "   "
+              {input_fields, button_fields} = Enum.split_with(fields, &(&1.type != :button))
+              input_lines = Enum.map(input_fields, &render_modal_field_line(&1, focused))
 
-                  cond do
-                    Map.has_key?(f, :value) ->
-                      label = String.pad_trailing(to_string(f.label), 17)
-                      val = to_string(f.value || "")
+              button_lines =
+                if button_fields == [] do
+                  []
+                else
+                  [
+                    Line.new([]),
+                    render_modal_button_bar(button_fields, focused, max(12, modal_area.width - 2))
+                  ]
+                end
 
-                      if focused? do
-                        Line.new([
-                          Span.new(prefix <> label <> ": ",
-                            style: %Style{fg: :yellow, modifiers: [:bold]}
-                          ),
-                          Span.new(val,
-                            style: %Style{fg: :black, bg: :yellow, modifiers: [:bold]}
-                          )
-                        ])
-                      else
-                        Line.new([
-                          Span.new(prefix <> label <> ": ", style: %Style{fg: :cyan}),
-                          Span.new(val, style: %Style{fg: :white})
-                        ])
-                      end
-
-                    focused? ->
-                      Line.new([
-                        Span.new(prefix <> to_string(f.label),
-                          style: %Style{fg: :black, bg: :yellow, modifiers: [:bold]}
-                        )
-                      ])
-
-                    true ->
-                      btn_fg =
-                        if String.contains?(to_string(f.label), "Delete"), do: :red, else: :white
-
-                      Line.new([
-                        Span.new(prefix <> to_string(f.label),
-                          style: %Style{fg: btn_fg, modifiers: [:bold]}
-                        )
-                      ])
-                  end
-                end)
-
-              {lines, []}
+              {input_lines ++ button_lines, []}
 
             _ ->
               raw_content =
@@ -2144,25 +2108,68 @@ defmodule Strata.UI.Renderer do
               {Enum.map(line_metas, & &1.line), wrapped_region_for_rect(modal_area, line_metas)}
           end
 
+        status_max_w = modal_status_width(modal_area.width)
+
         status_lines =
-          case Map.get(rendered_info, :status_message) do
-            msg when is_binary(msg) and msg != "" ->
+          case wrapped_status_lines(Map.get(rendered_info, :status_message), status_max_w) do
+            [] ->
+              []
+
+            wrapped ->
+              msg = Map.get(rendered_info, :status_message)
+              status_atom = Map.get(rendered_info, :status)
+
               st =
                 cond do
-                  String.contains?(msg, ["❌", "failed", "Error"]) ->
+                  status_atom == :error or String.contains?(msg, ["❌", "failed", "Error"]) ->
                     %Style{fg: :red, modifiers: [:bold]}
 
-                  String.contains?(msg, ["⏳", "Testing", "Checking", "Downloading", "Updating"]) ->
+                  status_atom in [:testing, :checking, :updating, :saving] or
+                      String.contains?(msg, [
+                        "⏳",
+                        "Testing",
+                        "Checking",
+                        "Downloading",
+                        "Updating",
+                        "Committing"
+                      ]) ->
                     %Style{fg: :yellow, modifiers: [:bold]}
 
-                  true ->
+                  status_atom == :update_available ->
+                    %Style{fg: :cyan, modifiers: [:bold]}
+
+                  status_atom in [:ok, :updated, :up_to_date, :ahead] or
+                      String.starts_with?(msg, ["⚡", "✅"]) ->
                     %Style{fg: :green, modifiers: [:bold]}
+
+                  true ->
+                    %Style{fg: :gray}
                 end
 
-              [Line.new([]), Line.new([Span.new("   " <> msg, style: st)])]
+              max_status_rows =
+                if is_list(Map.get(rendered_info, :fields)) do
+                  max(1, modal_area.height - 2 - length(content_lines) - 1)
+                else
+                  length(wrapped)
+                end
 
-            _ ->
-              []
+              visible_wrapped =
+                if length(wrapped) > max_status_rows do
+                  kept = Enum.take(wrapped, max_status_rows)
+
+                  List.update_at(kept, -1, fn last ->
+                    String.slice(last, 0, max(0, status_max_w - 1)) <> "…"
+                  end)
+                else
+                  wrapped
+                end
+
+              [
+                Line.new([])
+                | Enum.map(visible_wrapped, fn ln ->
+                    Line.new([Span.new("   " <> ln, style: st)])
+                  end)
+              ]
           end
 
         clear_widget = %ExRatatui.Widgets.Clear{}
@@ -2177,11 +2184,353 @@ defmodule Strata.UI.Renderer do
           }
         }
 
-        {[{clear_widget, m_rect}, {modal_widget, m_rect}], modal_regions}
+        dropdown_widgets = render_modal_dropdown(app, window_size)
+        {[{clear_widget, m_rect}, {modal_widget, m_rect}] ++ dropdown_widgets, modal_regions}
 
       [] ->
         {[], []}
     end
+  end
+
+  @doc """
+  Returns the dropdown options `[%{value, label, selected?}]` exported by `top` for `field`.
+  """
+  def modal_dropdown_options(top, field) when is_struct(top) do
+    mod = top.__struct__
+
+    if Code.ensure_loaded?(mod) and function_exported?(mod, :dropdown_options, 2) do
+      mod.dropdown_options(top, field)
+    else
+      []
+    end
+  end
+
+  def modal_dropdown_options(_top, _field), do: []
+
+  @doc """
+  Computes geometry and filtered/scrolled options for the active modal dropdown overlay.
+  Returns `nil` if no modal `:select` dropdown is currently open.
+  """
+  def modal_dropdown_data(app, window_size) do
+    with %{field: field} = dd <- Map.get(app, :modal_dropdown),
+         [top | _] <- Map.get(app, :modals, []),
+         modal_area = modal_area_for(app, window_size),
+         rendered_info = modal_rendered_info(top, modal_area),
+         fields when is_list(fields) <- Map.get(rendered_info, :fields),
+         input_fields = Enum.reject(fields, &(&1.type == :button)),
+         {field_def, field_row_idx} <-
+           input_fields
+           |> Enum.with_index()
+           |> Enum.find(fn {f, _idx} -> f.key == field and Map.get(f, :type) == :select end) do
+      search_raw = to_string(Map.get(dd, :search, ""))
+      search = String.downcase(String.trim(search_raw))
+
+      items =
+        modal_dropdown_options(top, field)
+        |> Enum.filter(fn item ->
+          search == "" or String.contains?(String.downcase(to_string(item.label)), search)
+        end)
+        |> Enum.sort_by(fn item ->
+          low = String.downcase(to_string(item.label))
+          if search != "" and String.starts_with?(low, search), do: 0, else: 1
+        end)
+
+      {win_w, win_h} = window_size
+      anchor_y = modal_area.y + 1 + field_row_idx
+
+      longest_label =
+        items
+        |> Enum.map(&String.length(to_string(&1.label)))
+        |> Enum.max(fn -> 18 end)
+
+      desired_w = max(28, min(54, longest_label + 6))
+      w = min(desired_w, max(20, win_w - 4))
+      x = max(2, min(modal_area.x + 21, max(2, win_w - w - 2)))
+
+      wanted_h = max(3, min(10, length(items) + 2))
+      space_below = max(0, win_h - anchor_y - 2)
+      space_above = max(0, anchor_y - 1)
+
+      {y, h} =
+        cond do
+          space_below >= min(wanted_h, 5) ->
+            {anchor_y + 1, max(3, min(wanted_h, space_below))}
+
+          space_above > space_below and space_above >= 3 ->
+            box_h = max(3, min(wanted_h, space_above))
+            {max(1, anchor_y - box_h), box_h}
+
+          true ->
+            box_h = max(3, min(wanted_h, max(3, win_h - anchor_y - 1)))
+            {min(anchor_y + 1, max(0, win_h - box_h)), box_h}
+        end
+
+      inner_h = max(1, h - 2)
+      idx = min(max(0, Map.get(dd, :index, 0)), max(0, length(items) - 1))
+
+      scroll_top =
+        if idx < inner_h do
+          0
+        else
+          min(idx - inner_h + 1, max(0, length(items) - inner_h))
+        end
+
+      %{
+        field: field,
+        field_label: Map.get(field_def, :label, to_string(field)),
+        rect: %{x: x, y: y, width: w, height: h},
+        items: items,
+        visible_items: Enum.slice(items, scroll_top, inner_h),
+        scroll_top: scroll_top,
+        selected_index: idx,
+        visible_selected: idx - scroll_top,
+        search: search_raw
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp render_modal_dropdown(app, window_size) do
+    case modal_dropdown_data(app, window_size) do
+      nil ->
+        []
+
+      %{
+        field_label: field_label,
+        rect: rect,
+        items: items,
+        visible_items: visible_items,
+        selected_index: idx,
+        visible_selected: vis_idx,
+        search: search
+      } ->
+        dd_rect = to_rect(rect)
+        clear_w = %ExRatatui.Widgets.Clear{}
+
+        title =
+          cond do
+            search != "" ->
+              " #{field_label}: #{search}▏ "
+
+            length(items) > length(visible_items) ->
+              " #{field_label} (#{idx + 1}/#{length(items)}) "
+
+            rect.width >= 36 ->
+              " #{field_label} (↑/↓ · Enter · Esc) "
+
+            true ->
+              " #{field_label} "
+          end
+
+        list_items =
+          if items == [] do
+            ["(No matching options)"]
+          else
+            Enum.map(visible_items, & &1.label)
+          end
+
+        list_w = %ExRatatui.Widgets.List{
+          items: list_items,
+          selected: if(items == [], do: 0, else: vis_idx),
+          highlight_symbol: "▸ ",
+          highlight_style: %ExRatatui.Style{fg: :black, bg: :yellow, modifiers: [:bold]},
+          block: %ExRatatui.Widgets.Block{
+            title: title,
+            borders: [:all],
+            border_type: :rounded,
+            border_style: %ExRatatui.Style{fg: :yellow}
+          }
+        }
+
+        [{clear_w, dd_rect}, {list_w, dd_rect}]
+    end
+  end
+
+  @doc """
+  Returns structured render metadata (`title`, `fields`, `focused_field`, etc.) for a modal.
+  Shared between `render_modal_with_meta/2` and `App.handle_modal_click/4`.
+  """
+  def modal_rendered_info(top, modal_area) do
+    case top do
+      %Strata.UI.Components.ConnectionModal{} = conn_modal ->
+        Strata.UI.Components.ConnectionModal.render(conn_modal, modal_area)
+
+      %Strata.UI.Components.ExportModal{} = export_modal ->
+        Strata.UI.Components.ExportModal.render(export_modal, modal_area)
+
+      %Strata.UI.Components.AISettingsModal{} = ai_settings_modal ->
+        Strata.UI.Components.AISettingsModal.render(ai_settings_modal, modal_area)
+
+      %Strata.UI.Components.UpdateModal{} = update_modal ->
+        Strata.UI.Components.UpdateModal.render(update_modal, modal_area)
+
+      %Strata.UI.Components.ConfirmModal{} = confirm_modal ->
+        Strata.UI.Components.ConfirmModal.render(confirm_modal, modal_area)
+
+      map when is_map(map) ->
+        map
+
+      other ->
+        %{title: "Modal", content: inspect(other)}
+    end
+  end
+
+  @doc """
+  Computes balanced left/right horizontal placement and 0-based inner X bounds
+  for modal `button_fields` inside `inner_width` columns.
+  Shared between `render_modal_button_bar/3` and `App.handle_modal_click/4`.
+  """
+  def modal_button_bar_layout(button_fields, inner_width) when is_list(button_fields) do
+    {left_btns, right_btns} =
+      case length(button_fields) do
+        0 -> {[], []}
+        1 -> {button_fields, []}
+        2 -> {[hd(button_fields)], tl(button_fields)}
+        _ -> Enum.split(button_fields, length(button_fields) - 2)
+      end
+
+    side_pad = 1
+    btn_gap = 1
+    slot_w = fn btn -> 1 + display_width(to_string(btn.label)) end
+
+    left_slots_w =
+      left_btns
+      |> Enum.map(slot_w)
+      |> Enum.intersperse(btn_gap)
+      |> Enum.sum()
+
+    right_slots_w =
+      right_btns
+      |> Enum.map(slot_w)
+      |> Enum.intersperse(btn_gap)
+      |> Enum.sum()
+
+    usable_w = max(1, inner_width - side_pad * 2)
+    middle_gap = max(2, usable_w - left_slots_w - right_slots_w)
+
+    {left_items, cursor_after_left} = layout_button_group(left_btns, side_pad, btn_gap, slot_w)
+    right_start = max(cursor_after_left + 1, side_pad + left_slots_w + middle_gap)
+    {right_items, _} = layout_button_group(right_btns, right_start, btn_gap, slot_w)
+
+    %{left: left_items, right: right_items, all: left_items ++ right_items}
+  end
+
+  defp layout_button_group(buttons, start_x, btn_gap, slot_w) do
+    {rev_items, cursor} =
+      Enum.reduce(buttons, {[], start_x}, fn btn, {acc, x} ->
+        w = slot_w.(btn)
+        item = %{key: btn.key, label: to_string(btn.label), start_x: x, end_x: x + w - 1}
+        {[item | acc], x + w + btn_gap}
+      end)
+
+    trimmed_cursor = if buttons == [], do: start_x, else: cursor - btn_gap
+    {Enum.reverse(rev_items), trimmed_cursor}
+  end
+
+  defp render_modal_field_line(f, focused) do
+    alias ExRatatui.Style
+    alias ExRatatui.Text.{Line, Span}
+
+    focused? = f.key == focused
+    prefix = if focused?, do: " ▸ ", else: "   "
+    label = String.pad_trailing(to_string(f.label), 17)
+    val = to_string(Map.get(f, :value) || "")
+    type = Map.get(f, :type)
+
+    hint_spans =
+      case type do
+        :select -> [Span.new(" ▾  Enter/←/→", style: %Style{fg: :dark_gray})]
+        :toggle -> [Span.new("  ←/→", style: %Style{fg: :dark_gray})]
+        _ -> []
+      end
+
+    if focused? do
+      Line.new(
+        [
+          Span.new(prefix <> label <> ": ", style: %Style{fg: :yellow, modifiers: [:bold]}),
+          Span.new(val, style: %Style{fg: :black, bg: :yellow, modifiers: [:bold]})
+        ] ++ hint_spans
+      )
+    else
+      placeholder? = String.starts_with?(val, "(") and String.ends_with?(val, ")")
+      val_fg = if placeholder?, do: :dark_gray, else: :white
+
+      Line.new(
+        [
+          Span.new(prefix <> label <> ": ", style: %Style{fg: :cyan}),
+          Span.new(val, style: %Style{fg: val_fg})
+        ] ++ hint_spans
+      )
+    end
+  end
+
+  defp render_modal_button_bar(button_fields, focused, inner_width) do
+    alias ExRatatui.Style
+    alias ExRatatui.Text.{Line, Span}
+
+    layout = modal_button_bar_layout(button_fields, inner_width)
+
+    {rev_spans, _col} =
+      Enum.reduce(layout.all, {[], 0}, fn item, {acc, col} ->
+        pad_n = max(0, item.start_x - col)
+        acc = if pad_n > 0, do: [Span.new(String.duplicate(" ", pad_n)) | acc], else: acc
+
+        focused? = item.key == focused
+        prefix = if focused?, do: "▸", else: " "
+        prefix_style = if focused?, do: %Style{fg: :yellow, modifiers: [:bold]}, else: %Style{}
+
+        btn_style =
+          cond do
+            focused? ->
+              %Style{fg: :black, bg: :yellow, modifiers: [:bold]}
+
+            item.key in [:delete_button, :discard_button] ->
+              %Style{fg: :red, modifiers: [:bold]}
+
+            item.key in [:save_button, :export_button, :update_button, :commit_button] ->
+              %Style{fg: :cyan, modifiers: [:bold]}
+
+            true ->
+              %Style{fg: :white, modifiers: [:bold]}
+          end
+
+        spans = [Span.new(item.label, style: btn_style), Span.new(prefix, style: prefix_style)]
+        {spans ++ acc, item.end_x + 1}
+      end)
+
+    Line.new(Enum.reverse(rev_spans))
+  end
+
+  defp display_width(str) when is_binary(str) do
+    str
+    |> String.graphemes()
+    |> Enum.reduce(0, fn g, acc ->
+      acc + if(wide_grapheme?(g), do: 2, else: 1)
+    end)
+  end
+
+  defp wide_grapheme?(g) do
+    case String.to_charlist(g) do
+      [cp | _] when cp >= 0x1F300 -> true
+      [cp | _] when cp in [0x26A1, 0x2B07, 0x274C, 0x23F3, 0x2705] -> true
+      _ -> false
+    end
+  end
+
+  defp dynamic_modal_dims(w, base_h, input_count, status_message, max_wh) do
+    status_count = length(wrapped_status_lines(status_message, modal_status_width(w)))
+    needed_h = if status_count > 0, do: input_count + 5 + status_count, else: base_h
+    {w, max(base_h, min(max_wh, min(30, needed_h)))}
+  end
+
+  defp modal_status_width(modal_w), do: max(12, modal_w - 7)
+
+  defp wrapped_status_lines(nil, _max_w), do: []
+  defp wrapped_status_lines("", _max_w), do: []
+
+  defp wrapped_status_lines(msg, max_w) when is_binary(msg) do
+    Strata.Formatter.wrap_words(msg, max_w)
   end
 
   defp wrapped_region_for_rect(rect, visible_metas, x_offset \\ 0) do

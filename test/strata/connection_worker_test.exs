@@ -180,4 +180,59 @@ defmodule Strata.ConnectionWorkerTest do
 
     assert {:error, {:ssh_tunnel_failed, _}} = ConnectionWorker.test_connection(missing_ssh)
   end
+
+  test "test_connection/1 returns immediate DBConnection.ConnectionError for unreachable Postgres/MySQL" do
+    pg_profile = %ConnectionProfile{
+      id: "pg_unreachable_#{System.unique_integer([:positive])}",
+      name: "PG Unreachable",
+      driver: :postgres,
+      host: "127.0.0.1",
+      port: 59_997,
+      database: "postgres",
+      username: "postgres",
+      password: ""
+    }
+
+    assert {:error, %DBConnection.ConnectionError{reason: :error, message: pg_msg}} =
+             ConnectionWorker.test_connection(pg_profile)
+
+    assert pg_msg =~ "connection refused"
+
+    my_profile = %ConnectionProfile{
+      id: "my_unreachable_#{System.unique_integer([:positive])}",
+      name: "MySQL Unreachable",
+      driver: :mysql,
+      host: "127.0.0.1",
+      port: 59_996,
+      database: "test",
+      username: "root",
+      password: ""
+    }
+
+    assert {:error, %DBConnection.ConnectionError{reason: :error, message: my_msg}} =
+             ConnectionWorker.test_connection(my_profile)
+
+    assert my_msg =~ "connection refused"
+  end
+
+  test "returns {:ssh_tunnel_failed, _} when inline manual SSH host is unreachable" do
+    manual_ssh_prof = %ConnectionProfile{
+      id: "manual_ssh_unreachable_#{System.unique_integer([:positive])}",
+      name: "Manual SSH Unreachable",
+      driver: :postgres,
+      host: "127.0.0.1",
+      port: 5432,
+      database: "postgres",
+      username: "postgres",
+      ssh: %{
+        host: "127.0.0.1",
+        port: 59_995,
+        username: "ops",
+        password: "",
+        identity_file: ""
+      }
+    }
+
+    assert {:error, {:ssh_tunnel_failed, _}} = ConnectionWorker.test_connection(manual_ssh_prof)
+  end
 end

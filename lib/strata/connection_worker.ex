@@ -132,7 +132,24 @@ defmodule Strata.ConnectionWorker do
   Returns `:ok` or `{:error, term()}`.
   """
   def test_connection(%ConnectionProfile{} = profile) do
-    with_transient_worker(profile, &test_connection/1)
+    driver = Strata.Adapter.normalize_driver(profile.driver)
+    adapter = Strata.Adapter.for_driver(driver)
+
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :test_connection, 3) do
+      case setup_network(profile, driver) do
+        {:ok, host, port, tunnel_pid} ->
+          try do
+            adapter.test_connection(profile, host, port)
+          after
+            cleanup_tunnel(tunnel_pid)
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      with_transient_worker(profile, &test_connection/1)
+    end
   end
 
   def test_connection(pid) when is_pid(pid) or is_atom(pid) do
@@ -344,6 +361,26 @@ defmodule Strata.ConnectionWorker do
     end
   end
 
+  defp setup_network(%ConnectionProfile{ssh: ssh} = profile, driver) when is_map(ssh) do
+    ssh_host = to_string(Map.get(ssh, :host) || "") |> String.trim()
+
+    if ssh_host == "" do
+      setup_network(%{profile | ssh: nil}, driver)
+    else
+      ssh_profile = %Strata.SSHProfile{
+        id: "#{profile.id}_manual_ssh",
+        name: "Manual SSH",
+        host: ssh_host,
+        port: Map.get(ssh, :port) || 22,
+        username: blank_to_nil(Map.get(ssh, :username)),
+        password: blank_to_nil(Map.get(ssh, :password)),
+        identity_file: blank_to_nil(Map.get(ssh, :identity_file))
+      }
+
+      connect_via_ssh_profile(ssh_profile, profile, driver)
+    end
+  end
+
   defp setup_network(%ConnectionProfile{ssh_profile_id: ssh_id} = profile, driver)
        when is_binary(ssh_id) and ssh_id != "" do
     try do
@@ -352,16 +389,7 @@ defmodule Strata.ConnectionWorker do
           {:error, {:ssh_tunnel_failed, "SSH profile '#{ssh_id}' not found"}}
 
         ssh_profile ->
-          target_host = profile.host || "localhost"
-          target_port = profile.port || Strata.Adapter.default_port(driver)
-
-          case SSHTunnel.connect(ssh_profile, target_host, target_port) do
-            {:ok, local_port, tunnel_pid} ->
-              {:ok, "127.0.0.1", local_port, tunnel_pid}
-
-            {:error, reason} ->
-              {:error, {:ssh_tunnel_failed, reason}}
-          end
+          connect_via_ssh_profile(ssh_profile, profile, driver)
       end
     rescue
       e -> {:error, {:ssh_tunnel_failed, Exception.message(e)}}
@@ -373,6 +401,32 @@ defmodule Strata.ConnectionWorker do
   defp setup_network(profile, _driver) do
     {:ok, profile.host, profile.port, nil}
   end
+
+  defp connect_via_ssh_profile(ssh_profile, profile, driver) do
+    target_host = profile.host || "localhost"
+    target_port = profile.port || Strata.Adapter.default_port(driver)
+
+    case SSHTunnel.connect(ssh_profile, target_host, target_port) do
+      {:ok, local_port, tunnel_pid} ->
+        {:ok, "127.0.0.1", local_port, tunnel_pid}
+
+      {:error, reason} ->
+        {:error, {:ssh_tunnel_failed, reason}}
+    end
+  rescue
+    e -> {:error, {:ssh_tunnel_failed, Exception.message(e)}}
+  catch
+    _, reason -> {:error, {:ssh_tunnel_failed, reason}}
+  end
+
+  defp blank_to_nil(nil), do: nil
+
+  defp blank_to_nil(val) when is_binary(val) do
+    trimmed = String.trim(val)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp blank_to_nil(val), do: val
 
   defp cleanup_tunnel(nil), do: :ok
   defp cleanup_tunnel(pid) when is_pid(pid), do: SSHTunnel.stop(pid)

@@ -8,15 +8,18 @@ defmodule Strata.UI.App do
   use ExRatatui.App
 
   alias Strata.UI.Components.ActionsModal
+  alias Strata.UI.Components.AIChatPanel
+  alias Strata.UI.Components.AISettingsModal
   alias Strata.UI.Components.ConnectionModal
   alias Strata.UI.Components.DataGrid
   alias Strata.UI.Components.ExportModal
   alias Strata.UI.Components.Sidebar
   alias Strata.UI.Components.SQLEditor
+  alias Strata.UI.Components.SQLTabPickerModal
   alias Strata.UI.Components.SSHModal
   alias Strata.UI.Renderer
 
-  @type focus_pane :: :sidebar | :editor | :datagrid
+  @type focus_pane :: :sidebar | :editor | :datagrid | :ai_panel
   @type active_view :: :table_view | :query_view
 
   @type tab_kind :: :table | :query
@@ -30,6 +33,7 @@ defmodule Strata.UI.App do
           table_request_id: integer() | nil,
           tabs: [tab()],
           active_tab_id: String.t() | nil,
+          closed_tabs: [map()],
           modals: [map()],
           sidebar_nodes: [map()],
           selected_tree_node_id: String.t() | nil,
@@ -55,6 +59,15 @@ defmodule Strata.UI.App do
           filter_bar_op: atom(),
           filter_bar_ref: reference() | nil,
           filter_bar_text: String.t(),
+          ai_request: map() | nil,
+          ai_panel_open: boolean(),
+          ai_panel_focus: :input | :history,
+          ai_input_text: String.t(),
+          ai_input_cursor: non_neg_integer(),
+          ai_pastes: map(),
+          ai_paste_seq: non_neg_integer(),
+          ai_history_scroll: non_neg_integer(),
+          ai_selected_msg_idx: non_neg_integer() | nil,
           filter_history: map(),
           filter_history_idx: non_neg_integer() | nil,
           filter_history_draft: map() | nil,
@@ -80,6 +93,7 @@ defmodule Strata.UI.App do
             table_request_id: nil,
             tabs: [],
             active_tab_id: nil,
+            closed_tabs: [],
             modals: [],
             sidebar_nodes: [],
             selected_tree_node_id: nil,
@@ -105,6 +119,15 @@ defmodule Strata.UI.App do
             filter_bar_op: :contains,
             filter_bar_ref: nil,
             filter_bar_text: "",
+            ai_request: nil,
+            ai_panel_open: false,
+            ai_panel_focus: :input,
+            ai_input_text: "",
+            ai_input_cursor: 0,
+            ai_pastes: %{},
+            ai_paste_seq: 0,
+            ai_history_scroll: 0,
+            ai_selected_msg_idx: nil,
             filter_history: %{},
             filter_history_idx: nil,
             filter_history_draft: nil,
@@ -187,7 +210,8 @@ defmodule Strata.UI.App do
       state.focus == :sidebar and state.sidebar_filter_active and Enum.empty?(state.modals) ->
         {:noreply, handle_sidebar_filter_key(state, mapped_key)}
 
-      mapped_key in ["q", "Q"] and state.focus != :editor and Enum.empty?(state.modals) ->
+      mapped_key in ["q", "Q"] and state.focus not in [:editor, :ai_panel] and
+          Enum.empty?(state.modals) ->
         {:stop, state}
 
       match?([%ConnectionModal{focused_field: :test_button} | _], state.modals) and
@@ -197,6 +221,10 @@ defmodule Strata.UI.App do
       match?([%SSHModal{focused_field: :test_button} | _], state.modals) and
           mapped_key in [:enter, :space] ->
         {:noreply, test_ssh_async(state)}
+
+      match?([%AISettingsModal{focused_field: :test_button} | _], state.modals) and
+          mapped_key in [:enter, :space] ->
+        {:noreply, test_ai_cli_async(state)}
 
       mapped_key in [{:ctrl, "enter"}, {:ctrl, "r"}] and Enum.empty?(state.modals) ->
         if active_tab_kind(state) == :query do
@@ -644,8 +672,14 @@ defmodule Strata.UI.App do
 
   @impl true
   def handle_info(:bootstrap, state) do
+    {state, restored?} = restore_workspace_tabs(state)
     profiles = safe_list_profiles()
-    {:noreply, start_schema_stream_tasks(state, profiles), render?: false}
+
+    if restored? do
+      {:noreply, start_schema_stream_tasks(state, profiles)}
+    else
+      {:noreply, start_schema_stream_tasks(state, profiles), render?: false}
+    end
   end
 
   def handle_info({:connection_schema_loaded, profile_id, new_node}, state)
@@ -710,7 +744,7 @@ defmodule Strata.UI.App do
   def handle_info(:throbber_tick, state) do
     grid = state.datagrid_state
 
-    if grid && grid.loading_more do
+    if match?(%DataGrid{loading_more: true}, grid) or state.ai_request != nil do
       timer = Process.send_after(self(), :throbber_tick, 80)
 
       {:noreply,
@@ -1022,6 +1056,40 @@ defmodule Strata.UI.App do
     {:noreply, state}
   end
 
+  def handle_info({:ai_cli_test_finished, res}, state) do
+    state =
+      case state.modals do
+        [%AISettingsModal{} = am | rest] ->
+          updated_am =
+            case res do
+              {:ok, msg} ->
+                %{am | status: :ok, status_message: msg}
+
+              {:error, reason} ->
+                msg = if is_binary(reason), do: reason, else: inspect(reason)
+                %{am | status: :error, status_message: "❌ AI CLI test failed: " <> msg}
+            end
+
+          %{state | modals: [updated_am | rest]}
+
+        _ ->
+          state
+      end
+
+    {:noreply, state}
+  end
+
+  def handle_info({:ai_task_finished, req_id, :sql, tab_id, msg_id, res}, state) do
+    case state.ai_request do
+      %{id: ^req_id} ->
+        state = %{state | ai_request: nil} |> cancel_throbber_timer()
+        {:noreply, apply_ai_task_result(state, tab_id, msg_id, res)}
+
+      _ ->
+        {:noreply, state, render?: false}
+    end
+  end
+
   def handle_info({:filter_query_finished, tab_id, where_clause, order_by_clause, result}, state) do
     state = apply_filter_query_result(state, tab_id, where_clause, order_by_clause, result)
     {:noreply, state}
@@ -1242,7 +1310,9 @@ defmodule Strata.UI.App do
         more_hint = if has_more?, do: "+", else: ""
 
         state
-        |> update_tab_by_id(tab_id, fn tab -> %{tab | datagrid_state: grid} end)
+        |> update_tab_by_id(tab_id, fn tab ->
+          %{tab | datagrid_state: grid, last_query_error: nil}
+        end)
         |> Map.put(
           :status_message,
           "⚡ Query executed successfully (#{length(rows)}#{more_hint} rows in #{elapsed}ms)"
@@ -1253,7 +1323,9 @@ defmodule Strata.UI.App do
         err_grid = DataGrid.new(["error"], [[msg]], has_more: false, loading_more: false)
 
         state
-        |> update_tab_by_id(tab_id, fn tab -> %{tab | datagrid_state: err_grid} end)
+        |> update_tab_by_id(tab_id, fn tab ->
+          %{tab | datagrid_state: err_grid, last_query_error: msg}
+        end)
         |> Map.put(:status_message, "❌ SQL Error: #{msg}")
     end
   end
@@ -1309,6 +1381,8 @@ defmodule Strata.UI.App do
 
   @impl true
   def terminate(_reason, state) do
+    flush_workspace(state)
+
     if Map.get(state, :terminal, false) do
       self_pid = self()
 
@@ -1336,11 +1410,18 @@ defmodule Strata.UI.App do
     super? =
       "super" in modifiers or "meta" in modifiers or "Super" in modifiers or "Meta" in modifiers
 
+    alt? = "alt" in modifiers or "Alt" in modifiers
     shift? = "shift" in modifiers or "Shift" in modifiers
 
     cond do
       ctrl? and code in ["enter", "Enter"] ->
         {:ctrl, "enter"}
+
+      shift? and code in ["enter", "Enter"] ->
+        :shift_enter
+
+      alt? and code in ["enter", "Enter"] ->
+        :alt_enter
 
       ctrl? and code in ["left", "Left"] ->
         {:ctrl, :left}
@@ -1495,7 +1576,13 @@ defmodule Strata.UI.App do
   """
   @spec cycle_focus(t(), :next | :prev) :: t()
   def cycle_focus(%__MODULE__{focus: current, active_view: active_view} = app, direction \\ :next) do
-    panes = if active_view == :table_view, do: [:sidebar, :datagrid], else: @panes
+    panes =
+      cond do
+        active_view == :table_view -> [:sidebar, :datagrid]
+        app.ai_panel_open -> [:sidebar, :editor, :datagrid, :ai_panel]
+        true -> @panes
+      end
+
     idx = Enum.find_index(panes, &(&1 == current)) || 0
     cnt = length(panes)
 
@@ -1554,7 +1641,8 @@ defmodule Strata.UI.App do
   Sets active focus pane if valid.
   """
   @spec set_focus(t(), atom()) :: t()
-  def set_focus(%__MODULE__{} = app, pane) when pane in @panes do
+  def set_focus(%__MODULE__{} = app, pane)
+      when pane in [:sidebar, :editor, :datagrid, :ai_panel] do
     %{app | focus: pane}
   end
 
@@ -1735,6 +1823,507 @@ defmodule Strata.UI.App do
   end
 
   defp test_ssh_async(state), do: state
+
+  defp test_ai_cli_async(%__MODULE__{modals: [%AISettingsModal{} = am | rest]} = state) do
+    settings = AISettingsModal.to_settings(am)
+    caller = self()
+
+    Task.start(fn ->
+      res = Strata.AI.Client.test_cli(settings)
+      send(caller, {:ai_cli_test_finished, res})
+    end)
+
+    updated_am = %{
+      am
+      | status: :testing,
+        status_message: "⏳ Testing #{Strata.AISettings.cli_command(settings.provider)} CLI..."
+    }
+
+    %{state | modals: [updated_am | rest]}
+  end
+
+  defp test_ai_cli_async(state), do: state
+
+  @doc """
+  Opens the AI Assistant Settings modal.
+  """
+  @spec open_ai_settings_modal(t()) :: t()
+  def open_ai_settings_modal(%__MODULE__{} = app) do
+    push_modal(app, AISettingsModal.new())
+  end
+
+  @doc """
+  Opens or toggles the Right AI Chat Panel for the active SQL tab.
+  - When closed (or in `:table_view`), switches to `:query_view`, opens the panel, and focuses input.
+  - When already open and focused elsewhere, moves focus to the AI input box.
+  - When already open and focused in `:ai_panel`, closes the panel and returns focus to `:editor`.
+  """
+  @spec open_ai_sql_prompt(t()) :: t()
+  def open_ai_sql_prompt(%__MODULE__{} = app) do
+    cond do
+      active_tab_kind(app) != :query ->
+        app
+        |> open_tab()
+        |> Map.put(:ai_panel_open, true)
+        |> Map.put(:ai_panel_focus, :input)
+        |> Map.put(:focus, :ai_panel)
+        |> sync_ai_panel_scroll_to_bottom()
+
+      not app.ai_panel_open ->
+        app
+        |> persist_active_tab()
+        |> Map.put(:ai_panel_open, true)
+        |> Map.put(:ai_panel_focus, :input)
+        |> Map.put(:focus, :ai_panel)
+        |> sync_ai_panel_scroll_to_bottom()
+        |> save_workspace_async()
+
+      app.focus != :ai_panel ->
+        %{app | ai_panel_focus: :input, focus: :ai_panel}
+
+      true ->
+        %{app | ai_panel_open: false, focus: :editor}
+        |> save_workspace_async()
+    end
+  end
+
+  @doc """
+  Submits the current `ai_input_text` inside the Right AI Chat Panel, expanding any collapsed paste pills.
+  """
+  @spec submit_ai_chat_input(t(), keyword()) :: t()
+  def submit_ai_chat_input(%__MODULE__{} = app, opts \\ []) do
+    display_prompt = String.trim(to_string(app.ai_input_text || ""))
+
+    if display_prompt == "" do
+      %{app | status_message: "⚠️ Enter a question or instruction for AI first"}
+    else
+      expanded_prompt = AIChatPanel.expand_pastes(display_prompt, app.ai_pastes || %{})
+
+      cleared = %{
+        app
+        | ai_input_text: "",
+          ai_input_cursor: 0,
+          ai_pastes: %{},
+          ai_paste_seq: 0
+      }
+
+      start_ai_sql_task(
+        cleared,
+        display_prompt,
+        Keyword.put(opts, :expanded_prompt, expanded_prompt)
+      )
+    end
+  end
+
+  @doc """
+  Applies the SQL generated in turn `msg_idx` of the active tab's `ai_messages` back into the SQL Editor.
+  """
+  @spec apply_ai_history_turn(t(), non_neg_integer()) :: t()
+  def apply_ai_history_turn(%__MODULE__{} = app, msg_idx) when is_integer(msg_idx) do
+    app = persist_active_tab(app)
+    tab = active_tab(app)
+    messages = (tab && Map.get(tab, :ai_messages, [])) || []
+
+    case Enum.at(messages, msg_idx) do
+      %{status: :done, sql: sql, id: msg_id} = msg when is_binary(sql) and sql != "" ->
+        app =
+          update_tab_by_id(app, tab.id, fn t ->
+            %{
+              t
+              | content: sql,
+                cursor: {0, 0},
+                scroll_offset: 0,
+                diagnostics: [],
+                ai_applied_msg_id: msg_id,
+                last_query_error: nil
+            }
+          end)
+
+        app =
+          case Enum.find(app.tabs, &(&1.id == tab.id)) do
+            nil -> app
+            updated_tab -> hydrate_tab(app, updated_tab)
+          end
+
+        save_workspace_async(app)
+
+        warn =
+          if Map.get(msg, :is_read_only, true),
+            do: "✨ Applied AI turn ##{msg_idx + 1} to SQL Editor",
+            else: "⚠️ Applied WRITE/DDL turn ##{msg_idx + 1} — review before running!"
+
+        %{app | ai_selected_msg_idx: msg_idx, status_message: warn}
+
+      %{status: :running} ->
+        %{app | status_message: "⏳ AI turn ##{msg_idx + 1} is still running..."}
+
+      _ ->
+        %{app | status_message: "⚠️ Selected AI turn has no SQL to apply"}
+    end
+  end
+
+  @doc """
+  Clears the active tab's AI session ID and chat history.
+  """
+  @spec reset_ai_tab_conversation(t()) :: t()
+  def reset_ai_tab_conversation(%__MODULE__{} = app) do
+    app = cancel_ai_request(app)
+
+    app =
+      if app.active_tab_id do
+        update_tab_by_id(app, app.active_tab_id, fn t ->
+          Map.merge(t, %{
+            ai_session_id: nil,
+            ai_messages: [],
+            ai_applied_msg_id: nil
+          })
+        end)
+      else
+        app
+      end
+
+    save_workspace_async(app)
+
+    %{
+      app
+      | ai_selected_msg_idx: nil,
+        ai_history_scroll: 0,
+        ai_panel_focus: :input,
+        status_message: "↺ Reset AI conversation for active tab"
+    }
+  end
+
+  defp start_ai_sql_task(app, display_prompt, opts \\ []) do
+    settings = Strata.AISettingsStore.get()
+    context = Strata.AI.ContextBuilder.build(app, settings)
+    tab = active_tab(app)
+    tab_id = tab && tab.id
+    session_id = tab && Map.get(tab, :ai_session_id)
+    msg_id = "ai_" <> Integer.to_string(System.unique_integer([:positive]))
+    ai_prompt = Keyword.get(opts, :expanded_prompt, display_prompt)
+
+    pending_msg = %{
+      id: msg_id,
+      prompt: display_prompt,
+      sql: nil,
+      is_read_only: true,
+      explanation: nil,
+      error: nil,
+      status: :running
+    }
+
+    app =
+      if tab_id do
+        update_tab_by_id(app, tab_id, fn t ->
+          msgs = Map.get(t, :ai_messages, []) ++ [pending_msg]
+          %{t | ai_messages: msgs}
+        end)
+      else
+        app
+      end
+
+    req_id = make_ref()
+    caller = self()
+    client_opts = Keyword.merge([session_id: session_id], Keyword.delete(opts, :expanded_prompt))
+
+    {:ok, pid} =
+      Task.start(fn ->
+        res = Strata.AI.Client.generate_sql(settings, context, ai_prompt, client_opts)
+        send(caller, {:ai_task_finished, req_id, :sql, tab_id, msg_id, res})
+      end)
+
+    provider_name = Strata.AISettings.cli_command(settings.provider)
+    updated_tab = Enum.find(app.tabs, &(&1.id == tab_id))
+
+    new_sel_idx =
+      max(0, length((updated_tab && Map.get(updated_tab, :ai_messages, [])) || []) - 1)
+
+    %{
+      app
+      | ai_request: %{id: req_id, pid: pid, tab_id: tab_id, msg_id: msg_id},
+        ai_selected_msg_idx: new_sel_idx,
+        status_message: "⏳ Asking #{provider_name} AI..."
+    }
+    |> sync_ai_panel_scroll_to_bottom()
+    |> start_throbber_timer()
+  end
+
+  defp cancel_ai_request(
+         %__MODULE__{ai_request: %{pid: pid, tab_id: tab_id, msg_id: msg_id}} = app
+       ) do
+    if is_pid(pid) and Process.alive?(pid) do
+      Process.exit(pid, :kill)
+    end
+
+    app =
+      if tab_id do
+        update_tab_by_id(app, tab_id, fn t ->
+          msgs =
+            Map.get(t, :ai_messages, [])
+            |> Enum.map(fn m ->
+              if Map.get(m, :id) == msg_id and Map.get(m, :status) == :running do
+                %{m | status: :error, error: "Cancelled"}
+              else
+                m
+              end
+            end)
+
+          %{t | ai_messages: msgs}
+        end)
+      else
+        app
+      end
+
+    %{app | ai_request: nil, status_message: "Cancelled AI request"}
+    |> cancel_throbber_timer()
+  end
+
+  defp cancel_ai_request(app), do: app
+
+  defp apply_ai_task_result(app, tab_id, msg_id, {:error, msg}) do
+    err_text = to_string(msg)
+
+    app =
+      if tab_id do
+        update_tab_by_id(app, tab_id, fn t ->
+          msgs =
+            Map.get(t, :ai_messages, [])
+            |> Enum.map(fn m ->
+              if Map.get(m, :id) == msg_id do
+                %{m | status: :error, error: err_text}
+              else
+                m
+              end
+            end)
+
+          %{t | ai_messages: msgs}
+        end)
+      else
+        app
+      end
+
+    save_workspace_sync(app)
+
+    %{app | status_message: "❌ AI error: #{err_text}"}
+    |> sync_ai_panel_scroll_to_bottom()
+  end
+
+  defp apply_ai_task_result(app, tab_id, msg_id, {:ok, res}) do
+    sql = to_string(res.sql || "")
+    session_id = res.session_id
+
+    target_id =
+      cond do
+        is_binary(tab_id) and Enum.any?(app.tabs, &(&1.id == tab_id and &1.kind == :query)) ->
+          tab_id
+
+        active_tab_kind(app) == :query ->
+          app.active_tab_id
+
+        true ->
+          nil
+      end
+
+    app =
+      if target_id do
+        update_tab_by_id(app, target_id, fn t ->
+          msgs =
+            Map.get(t, :ai_messages, [])
+            |> Enum.map(fn m ->
+              if Map.get(m, :id) == msg_id do
+                %{
+                  m
+                  | status: :done,
+                    sql: sql,
+                    is_read_only: res.is_read_only,
+                    explanation: res.explanation,
+                    error: nil
+                }
+              else
+                m
+              end
+            end)
+
+          %{
+            t
+            | content: sql,
+              cursor: {0, 0},
+              scroll_offset: 0,
+              diagnostics: [],
+              ai_session_id: session_id || Map.get(t, :ai_session_id),
+              ai_applied_msg_id: msg_id,
+              ai_messages: msgs,
+              last_query_error: nil
+          }
+        end)
+      else
+        opened = open_tab(app, content: sql)
+
+        if opened.active_tab_id do
+          update_tab_by_id(opened, opened.active_tab_id, fn t ->
+            %{t | ai_session_id: session_id, ai_applied_msg_id: msg_id}
+          end)
+        else
+          opened
+        end
+      end
+
+    app =
+      case Enum.find(app.tabs, &(&1.id == (target_id || app.active_tab_id))) do
+        nil -> app
+        tab -> hydrate_tab(app, tab)
+      end
+
+    save_workspace_sync(app)
+
+    status_msg =
+      if res.is_read_only do
+        "✨ AI SQL ready (#{res.explanation}) — Ctrl+Enter to Run"
+      else
+        "⚠️ AI SQL ready (WRITE/DDL — review carefully!): #{res.explanation}"
+      end
+
+    %{app | status_message: status_msg}
+    |> sync_ai_panel_scroll_to_bottom()
+  end
+
+  defp sync_ai_panel_scroll_to_bottom(app) do
+    areas = Renderer.layout_for(app)
+
+    case Map.get(areas, :ai_panel) do
+      %{} = ai_area ->
+        %{history_area: hist_area} = AIChatPanel.areas(ai_area)
+        tab = active_tab(app)
+        data = AIChatPanel.history_data(app, tab, hist_area)
+        msgs = (tab && Map.get(tab, :ai_messages, [])) || []
+
+        %{
+          app
+          | ai_history_scroll: data.max_scroll,
+            ai_selected_msg_idx: if(msgs == [], do: nil, else: length(msgs) - 1)
+        }
+
+      nil ->
+        app
+    end
+  end
+
+  defp restore_workspace_tabs(app) do
+    case Strata.WorkspaceStore.load() do
+      %{tabs: saved_tabs, active_tab_id: saved_active_id} = ws ->
+        closed = Map.get(ws, :closed_tabs, [])
+        ai_open? = Map.get(ws, :ai_panel_open, false) == true
+
+        if is_list(saved_tabs) and saved_tabs != [] do
+          restored =
+            Enum.map(saved_tabs, fn t ->
+              build_query_tab(t.id, t.name,
+                profile_id: t.profile_id,
+                content: t.content,
+                cursor: t.cursor,
+                ai_session_id: t.ai_session_id,
+                ai_applied_msg_id: t.ai_applied_msg_id,
+                ai_messages: t.ai_messages
+              )
+            end)
+
+          target_tab =
+            Enum.find(restored, &(&1.id == saved_active_id)) || List.first(restored)
+
+          restored_app =
+            %{app | tabs: restored, closed_tabs: closed, ai_panel_open: ai_open?}
+            |> hydrate_tab(target_tab)
+
+          {restored_app, true}
+        else
+          {%{app | closed_tabs: closed, ai_panel_open: ai_open?}, false}
+        end
+
+      _ ->
+        {app, false}
+    end
+  end
+
+  defp save_workspace_async(app) do
+    if Process.whereis(Strata.WorkspaceStore) do
+      persisted = persist_active_tab(app)
+
+      Strata.WorkspaceStore.save(
+        persisted.tabs,
+        persisted.active_tab_id,
+        app.closed_tabs,
+        ai_panel_open: app.ai_panel_open
+      )
+    end
+
+    app
+  end
+
+  defp save_workspace_sync(app) do
+    flush_workspace(app)
+    app
+  end
+
+  defp flush_workspace(app) do
+    if Process.whereis(Strata.WorkspaceStore) do
+      persisted = persist_active_tab(app)
+
+      Strata.WorkspaceStore.save_sync(
+        persisted.tabs,
+        persisted.active_tab_id,
+        app.closed_tabs,
+        ai_panel_open: app.ai_panel_open
+      )
+    end
+
+    :ok
+  end
+
+  @doc """
+  Opens a new blank SQL tab immediately if `closed_tabs` is empty, or pushes
+  `SQLTabPickerModal` so the user can choose between a new blank tab or reopening a closed tab.
+  """
+  @spec request_new_sql_tab(t()) :: t()
+  def request_new_sql_tab(%__MODULE__{closed_tabs: []} = app), do: open_tab(app)
+
+  def request_new_sql_tab(%__MODULE__{closed_tabs: closed} = app) when is_list(closed) do
+    push_modal(app, SQLTabPickerModal.new(closed))
+  end
+
+  @doc """
+  Reopens a previously closed SQL tab entry (restoring SQL content, cursor, and AI chat history)
+  and removes it from `closed_tabs`.
+  """
+  @spec reopen_closed_tab(t(), map()) :: t()
+  def reopen_closed_tab(%__MODULE__{} = app, closed_tab) when is_map(closed_tab) do
+    closed_id = Map.get(closed_tab, :id)
+    remaining_closed = Enum.reject(app.closed_tabs || [], &(Map.get(&1, :id) == closed_id))
+    ai_messages = Map.get(closed_tab, :ai_messages, [])
+
+    reopened =
+      %{app | closed_tabs: remaining_closed}
+      |> open_tab(
+        name: Map.get(closed_tab, :name),
+        profile_id: Map.get(closed_tab, :profile_id),
+        content: Map.get(closed_tab, :content, ""),
+        cursor: Map.get(closed_tab, :cursor, {0, 0}),
+        ai_session_id: Map.get(closed_tab, :ai_session_id),
+        ai_applied_msg_id: Map.get(closed_tab, :ai_applied_msg_id),
+        ai_messages: ai_messages
+      )
+
+    reopened =
+      if ai_messages != [] do
+        %{reopened | ai_panel_open: true}
+        |> sync_ai_panel_scroll_to_bottom()
+      else
+        reopened
+      end
+
+    reopened
+    |> Map.put(:status_message, "↺ Reopened SQL tab '#{Map.get(closed_tab, :name, "Query")}'")
+    |> save_workspace_sync()
+  end
 
   @doc """
   Invalidates cache and reloads the currently selected table.
@@ -2843,6 +3432,24 @@ defmodule Strata.UI.App do
       app.modals != [] ->
         handle_key(app, clean_inline_paste(text))
 
+      app.focus == :ai_panel ->
+        clean =
+          text
+          |> String.replace("\r\n", "\n")
+          |> String.replace("\r", "\n")
+          |> String.trim_trailing("\n")
+
+        if AIChatPanel.long_paste?(clean) do
+          seq = (app.ai_paste_seq || 0) + 1
+          token = AIChatPanel.paste_pill_label(seq, clean)
+          pastes = Map.put(app.ai_pastes || %{}, token, clean)
+
+          %{app | ai_pastes: pastes, ai_paste_seq: seq}
+          |> insert_ai_input_text(token)
+        else
+          insert_ai_input_text(app, clean)
+        end
+
       app.focus == :editor ->
         SQLEditor.handle_key(app, {:paste, text})
 
@@ -3180,13 +3787,19 @@ defmodule Strata.UI.App do
         refresh_active_table(app)
 
       :new_sql_tab ->
-        open_tab(app)
+        request_new_sql_tab(app)
 
       :close_tab ->
         close_tab(app, app.active_tab_id)
 
       :next_tab ->
         cycle_tab(app, 1)
+
+      :ai_settings ->
+        open_ai_settings_modal(app)
+
+      :ai_sql_assistant ->
+        open_ai_sql_prompt(app)
 
       _ ->
         app
@@ -3212,7 +3825,7 @@ defmodule Strata.UI.App do
   end
 
   defp pointer_for_position(app, x, y) do
-    layout = Renderer.layout(app.window_size, app.active_view)
+    layout = Renderer.layout_for(app)
     areas = Renderer.datagrid_areas(layout.datagrid, app)
     dd = Renderer.filter_dropdown_data(app, layout.datagrid)
 
@@ -3225,6 +3838,16 @@ defmodule Strata.UI.App do
 
       dd != nil and inside_area?(x, y, dd.rect) ->
         :pointer
+
+      Map.get(layout, :ai_panel) != nil and inside_area?(x, y, layout.ai_panel) ->
+        %{input_area: inp_area} =
+          AIChatPanel.areas(layout.ai_panel, input_text: app.ai_input_text)
+
+        if inp_area != nil and inside_area?(x, y, inp_area) do
+          :text
+        else
+          :pointer
+        end
 
       app.active_view == :query_view and inside_area?(x, y, layout.editor) ->
         :text
@@ -3371,12 +3994,17 @@ defmodule Strata.UI.App do
     new_tab =
       build_query_tab(tab_id, name,
         content: content,
-        profile_id: Keyword.get(tab_opts, :profile_id, profile && profile.id)
+        profile_id: Keyword.get(tab_opts, :profile_id, profile && profile.id),
+        cursor: Keyword.get(tab_opts, :cursor, {0, 0}),
+        ai_session_id: Keyword.get(tab_opts, :ai_session_id),
+        ai_applied_msg_id: Keyword.get(tab_opts, :ai_applied_msg_id),
+        ai_messages: Keyword.get(tab_opts, :ai_messages, [])
       )
 
     %{app | tabs: app.tabs ++ [new_tab]}
     |> hydrate_tab(new_tab)
     |> Map.put(:focus, :editor)
+    |> save_workspace_async()
   end
 
   @doc """
@@ -3387,8 +4015,17 @@ defmodule Strata.UI.App do
 
   def close_tab(%__MODULE__{active_tab_id: active_id} = app, tab_id) do
     app = persist_active_tab(app)
+    closing_tab = Enum.find(app.tabs, &(&1.id == tab_id))
     closed_idx = Enum.find_index(app.tabs, &(&1.id == tab_id))
     remaining = Enum.reject(app.tabs, &(&1.id == tab_id))
+
+    closed_entry =
+      if closing_tab, do: Strata.WorkspaceStore.build_closed_tab_entry(closing_tab), else: nil
+
+    updated_closed =
+      Strata.WorkspaceStore.prepend_closed_tab(app.closed_tabs || [], closed_entry)
+
+    app = %{app | closed_tabs: updated_closed}
 
     cond do
       is_nil(closed_idx) ->
@@ -3415,6 +4052,7 @@ defmodule Strata.UI.App do
                 inspector_open: false,
                 focus: :sidebar
             }
+            |> save_workspace_sync()
 
           _ ->
             next_tab = Enum.at(remaining, min(closed_idx, length(remaining) - 1))
@@ -3428,10 +4066,12 @@ defmodule Strata.UI.App do
                 true -> s
               end
             end)
+            |> save_workspace_sync()
         end
 
       true ->
         %{app | tabs: remaining}
+        |> save_workspace_sync()
     end
   end
 
@@ -3463,6 +4103,7 @@ defmodule Strata.UI.App do
               s
           end
         end)
+        |> save_workspace_async()
     end
   end
 
@@ -3625,6 +4266,10 @@ defmodule Strata.UI.App do
       diagnostics: Keyword.get(opts, :diagnostics, []),
       executed_sql: Keyword.get(opts, :executed_sql),
       query_request_id: Keyword.get(opts, :query_request_id),
+      ai_session_id: Keyword.get(opts, :ai_session_id),
+      ai_applied_msg_id: Keyword.get(opts, :ai_applied_msg_id),
+      ai_messages: Keyword.get(opts, :ai_messages, []),
+      last_query_error: Keyword.get(opts, :last_query_error),
       completion:
         Keyword.get(opts, :completion, %{
           active?: false,
@@ -3749,10 +4394,12 @@ defmodule Strata.UI.App do
     if kind == :table do
       f_text = Map.get(tab, :filter_bar_text, "")
       if base.filter_bar_ref, do: ExRatatui.text_input_set_value(base.filter_bar_ref, f_text)
+      next_focus = if base.focus == :ai_panel, do: :datagrid, else: base.focus
 
       %{
         base
-        | selected_table: Map.get(tab, :table_name),
+        | focus: next_focus,
+          selected_table: Map.get(tab, :table_name),
           selected_schema: Map.get(tab, :schema),
           table_request_id: Map.get(tab, :table_request_id),
           structure_restore_grid: Map.get(tab, :structure_restore_grid),
@@ -3769,6 +4416,8 @@ defmodule Strata.UI.App do
           filter_dropdown_search: Map.get(tab, :filter_dropdown_search, "")
       }
     else
+      msgs = Map.get(tab, :ai_messages, [])
+
       %{
         base
         | selected_table: nil,
@@ -3785,8 +4434,10 @@ defmodule Strata.UI.App do
           filter_bar_text: "",
           filter_dropdown: nil,
           filter_dropdown_idx: 0,
-          filter_dropdown_search: ""
+          filter_dropdown_search: "",
+          ai_selected_msg_idx: if(msgs == [], do: nil, else: length(msgs) - 1)
       }
+      |> sync_ai_panel_scroll_to_bottom()
     end
   end
 
@@ -3866,12 +4517,37 @@ defmodule Strata.UI.App do
 
   def handle_key(%__MODULE__{modals: [top | rest]} = app, key) do
     case key do
-      :esc ->
+      :esc when not is_struct(top, SQLTabPickerModal) ->
         {_popped, app} = pop_modal(app)
         app
 
       _ ->
         cond do
+          match?(%SQLTabPickerModal{}, top) ->
+            case SQLTabPickerModal.handle_key(top, key) do
+              {:new_blank, _modal} ->
+                {_popped, app} = pop_modal(app)
+                open_tab(app)
+
+              {:reopen, closed_tab, _modal} ->
+                {_popped, app} = pop_modal(app)
+                reopen_closed_tab(app, closed_tab)
+
+              {:delete_closed, closed_id, updated_modal} ->
+                remaining_closed =
+                  Enum.reject(app.closed_tabs || [], &(Map.get(&1, :id) == closed_id))
+
+                %{app | closed_tabs: remaining_closed, modals: [updated_modal | rest]}
+                |> save_workspace_async()
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %SQLTabPickerModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
           match?(%ActionsModal{}, top) ->
             case ActionsModal.handle_key(top, key) do
               {:execute, action_id, _modal} ->
@@ -3949,6 +4625,36 @@ defmodule Strata.UI.App do
                 %{app | modals: [updated_modal | rest]}
             end
 
+          match?(%AISettingsModal{}, top) ->
+            case AISettingsModal.handle_key(top, key) do
+              {:save, modal} ->
+                settings = AISettingsModal.to_settings(modal)
+
+                try do
+                  Strata.AISettingsStore.put(settings)
+                catch
+                  _, _ -> :ok
+                end
+
+                {_popped, app} = pop_modal(app)
+
+                %{
+                  app
+                  | status_message:
+                      "Saved AI settings (#{Strata.AISettings.cli_command(settings.provider)})"
+                }
+
+              {:test, _modal} ->
+                test_ai_cli_async(app)
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %AISettingsModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
           match?(%{type: :confirm_delete_connection}, top) ->
             case key do
               k when k in ["y", "Y", :enter] ->
@@ -3990,11 +4696,15 @@ defmodule Strata.UI.App do
 
   def handle_key(%__MODULE__{} = app, {:ctrl, "enter"}), do: run_or_refresh_active(app)
   def handle_key(%__MODULE__{} = app, {:ctrl, "r"}), do: run_or_refresh_active(app)
-  def handle_key(%__MODULE__{} = app, {:ctrl, "t"}), do: open_tab(app)
+  def handle_key(%__MODULE__{} = app, {:ctrl, "t"}), do: request_new_sql_tab(app)
   def handle_key(%__MODULE__{} = app, {:ctrl, "p"}), do: open_actions_modal(app)
 
   def handle_key(%__MODULE__{active_view: :table_view} = app, {:ctrl, "g"}),
     do: open_table_in_sql_editor(app)
+
+  def handle_key(%__MODULE__{} = app, key) when key in [{:ctrl, "o"}, :f6] do
+    open_ai_sql_prompt(app)
+  end
 
   def handle_key(%__MODULE__{} = app, {:ctrl, "w"}), do: close_tab(app, app.active_tab_id)
   def handle_key(%__MODULE__{} = app, {:ctrl, :left}), do: cycle_tab(app, -1)
@@ -4018,7 +4728,8 @@ defmodule Strata.UI.App do
   def handle_key(%__MODULE__{} = app, :f3), do: toggle_structure_view(app)
   def handle_key(%__MODULE__{} = app, :f4), do: toggle_inspector(app)
 
-  def handle_key(%__MODULE__{focus: focus} = app, "?") when focus != :editor do
+  def handle_key(%__MODULE__{focus: focus} = app, "?")
+      when focus not in [:editor, :ai_panel] do
     open_actions_modal(app)
   end
 
@@ -4026,17 +4737,24 @@ defmodule Strata.UI.App do
   def handle_key(%__MODULE__{} = app, {:ctrl, "2"}), do: switch_view(app, :query_view)
   def handle_key(%__MODULE__{} = app, {:ctrl, "3"}), do: set_focus(app, :datagrid)
 
-  def handle_key(%__MODULE__{focus: focus} = app, "1") when focus != :editor,
-    do: switch_view(app, :table_view)
+  def handle_key(%__MODULE__{focus: focus} = app, "1")
+      when focus not in [:editor, :ai_panel],
+      do: switch_view(app, :table_view)
 
-  def handle_key(%__MODULE__{focus: focus} = app, "2") when focus != :editor,
-    do: switch_view(app, :query_view)
+  def handle_key(%__MODULE__{focus: focus} = app, "2")
+      when focus not in [:editor, :ai_panel],
+      do: switch_view(app, :query_view)
 
-  def handle_key(%__MODULE__{focus: focus} = app, "3") when focus != :editor,
-    do: set_focus(app, :datagrid)
+  def handle_key(%__MODULE__{focus: focus} = app, "3")
+      when focus not in [:editor, :ai_panel],
+      do: set_focus(app, :datagrid)
 
   def handle_key(%__MODULE__{focus: :sidebar} = app, key) do
     Sidebar.handle_key(app, key)
+  end
+
+  def handle_key(%__MODULE__{focus: :ai_panel} = app, key) do
+    handle_ai_panel_key(app, key)
   end
 
   def handle_key(%__MODULE__{focus: :editor} = app, key) do
@@ -4052,7 +4770,9 @@ defmodule Strata.UI.App do
         end
 
       _ ->
-        SQLEditor.handle_key(app, key)
+        mapped = if key == :shift_enter, do: :enter, else: key
+        updated = SQLEditor.handle_key(app, mapped)
+        if editor_mutating_key?(mapped), do: save_workspace_async(updated), else: updated
     end
   end
 
@@ -4087,6 +4807,193 @@ defmodule Strata.UI.App do
   end
 
   def handle_key(%__MODULE__{} = app, _key), do: app
+
+  defp editor_mutating_key?(key) when is_binary(key), do: true
+
+  defp editor_mutating_key?(key)
+       when key in [:enter, :backspace, :delete, :tab, {:ctrl, "k"}, {:ctrl, "u"}],
+       do: true
+
+  defp editor_mutating_key?(_), do: false
+
+  defp handle_ai_panel_key(app, :esc) do
+    cond do
+      app.ai_request != nil ->
+        cancel_ai_request(app)
+
+      app.ai_panel_focus == :history ->
+        %{app | ai_panel_focus: :input}
+
+      true ->
+        %{app | focus: :editor}
+    end
+  end
+
+  defp handle_ai_panel_key(%__MODULE__{ai_panel_focus: :history} = app, key) do
+    tab = active_tab(app)
+    messages = (tab && Map.get(tab, :ai_messages, [])) || []
+
+    if messages == [] do
+      %{app | ai_panel_focus: :input}
+    else
+      max_idx = length(messages) - 1
+      curr_idx = max(0, min(max_idx, app.ai_selected_msg_idx || max_idx))
+
+      case key do
+        k when k in [:up, "k", "K"] ->
+          next_idx = max(0, curr_idx - 1)
+          scroll_to_ai_turn(%{app | ai_selected_msg_idx: next_idx}, next_idx)
+
+        k when k in [:down, "j", "J"] ->
+          if curr_idx >= max_idx do
+            %{app | ai_panel_focus: :input}
+          else
+            next_idx = curr_idx + 1
+            scroll_to_ai_turn(%{app | ai_selected_msg_idx: next_idx}, next_idx)
+          end
+
+        :home ->
+          scroll_to_ai_turn(%{app | ai_selected_msg_idx: 0}, 0)
+
+        :end ->
+          scroll_to_ai_turn(%{app | ai_selected_msg_idx: max_idx}, max_idx)
+
+        k when k in [:enter, :space] ->
+          apply_ai_history_turn(app, curr_idx)
+
+        {:ctrl, "l"} ->
+          reset_ai_tab_conversation(app)
+
+        _ ->
+          app
+      end
+    end
+  end
+
+  defp handle_ai_panel_key(%__MODULE__{ai_panel_focus: :input} = app, key) do
+    case key do
+      :enter ->
+        if app.ai_request != nil, do: app, else: submit_ai_chat_input(app)
+
+      k when k in [:shift_enter, :alt_enter, "\n", {:ctrl, "j"}] ->
+        insert_ai_input_text(app, "\n")
+
+      :up ->
+        tab = active_tab(app)
+        messages = (tab && Map.get(tab, :ai_messages, [])) || []
+
+        if messages != [] do
+          last_idx = length(messages) - 1
+
+          scroll_to_ai_turn(
+            %{app | ai_panel_focus: :history, ai_selected_msg_idx: last_idx},
+            last_idx
+          )
+        else
+          app
+        end
+
+      :left ->
+        pos = clamp_ai_cursor(app.ai_input_cursor, app.ai_input_text)
+        new_pos = AIChatPanel.move_cursor_left(app.ai_input_text || "", pos, app.ai_pastes || %{})
+        %{app | ai_input_cursor: new_pos}
+
+      :right ->
+        pos = clamp_ai_cursor(app.ai_input_cursor, app.ai_input_text)
+
+        new_pos =
+          AIChatPanel.move_cursor_right(app.ai_input_text || "", pos, app.ai_pastes || %{})
+
+        %{app | ai_input_cursor: new_pos}
+
+      :home ->
+        %{app | ai_input_cursor: 0}
+
+      :end ->
+        %{app | ai_input_cursor: String.length(app.ai_input_text || "")}
+
+      k when k in [{:ctrl, "u"}, {:ctrl, "k"}] ->
+        %{app | ai_input_text: "", ai_input_cursor: 0, ai_pastes: %{}, ai_paste_seq: 0}
+
+      {:ctrl, "f"} ->
+        trigger_ai_fix_error(app)
+
+      {:ctrl, "l"} ->
+        reset_ai_tab_conversation(app)
+
+      :backspace ->
+        val = app.ai_input_text || ""
+        pos = clamp_ai_cursor(app.ai_input_cursor, val)
+
+        {new_val, new_pos, new_pastes} =
+          AIChatPanel.delete_before_cursor(val, pos, app.ai_pastes || %{})
+
+        %{app | ai_input_text: new_val, ai_input_cursor: new_pos, ai_pastes: new_pastes}
+
+      :delete ->
+        val = app.ai_input_text || ""
+        pos = clamp_ai_cursor(app.ai_input_cursor, val)
+
+        {new_val, new_pos, new_pastes} =
+          AIChatPanel.delete_at_cursor(val, pos, app.ai_pastes || %{})
+
+        %{app | ai_input_text: new_val, ai_input_cursor: new_pos, ai_pastes: new_pastes}
+
+      ch when is_binary(ch) ->
+        if String.printable?(ch), do: insert_ai_input_text(app, ch), else: app
+
+      _ ->
+        app
+    end
+  end
+
+  defp insert_ai_input_text(app, text) when is_binary(text) do
+    val = app.ai_input_text || ""
+    pos = clamp_ai_cursor(app.ai_input_cursor, val)
+    new_val = String.slice(val, 0, pos) <> text <> String.slice(val, pos..-1//1)
+    %{app | ai_input_text: new_val, ai_input_cursor: pos + String.length(text)}
+  end
+
+  defp clamp_ai_cursor(pos, str) do
+    len = String.length(to_string(str || ""))
+    max(0, min(pos || len, len))
+  end
+
+  defp trigger_ai_fix_error(app) do
+    tab = active_tab(app)
+    err = tab && Map.get(tab, :last_query_error)
+
+    if is_binary(err) and String.trim(err) != "" and app.ai_request == nil do
+      prompt = "Fix the SQL error in the current query: #{String.slice(String.trim(err), 0, 220)}"
+      start_ai_sql_task(app, prompt)
+    else
+      app
+    end
+  end
+
+  defp scroll_to_ai_turn(app, idx) do
+    areas = Renderer.layout_for(app)
+
+    case Map.get(areas, :ai_panel) do
+      %{} = ai_area ->
+        %{history_area: hist_area} = AIChatPanel.areas(ai_area)
+        tab = active_tab(app)
+        data = AIChatPanel.history_data(app, tab, hist_area)
+
+        new_scroll =
+          AIChatPanel.scroll_for_selected_turn(
+            data.turn_ranges,
+            idx,
+            data.scroll_top,
+            data.viewport_h
+          )
+
+        %{app | ai_history_scroll: new_scroll}
+
+      nil ->
+        app
+    end
+  end
 
   defp export_grid_data(app, modal, format, file_path, scope) do
     grid = app.datagrid_state || DataGrid.new()
@@ -4141,6 +5048,23 @@ defmodule Strata.UI.App do
     %{app | modals: [%{am | selected_index: next} | rest]}
   end
 
+  def handle_mouse(
+        %__MODULE__{modals: [%SQLTabPickerModal{} = picker | rest]} = app,
+        {:scroll, dir, _x, _y}
+      ) do
+    items = SQLTabPickerModal.visible_items(picker)
+    max_idx = max(0, length(items) - 1)
+
+    next =
+      if dir in [:up, :scroll_up] do
+        max(0, picker.selected_index - 1)
+      else
+        min(max_idx, picker.selected_index + 1)
+      end
+
+    %{app | modals: [%{picker | selected_index: next} | rest]}
+  end
+
   def handle_mouse(%__MODULE__{modals: [_ | _]} = app, {:scroll, _dir, _x, _y}) do
     # Modal scroll lock: prevent scroll bleed into background panes
     app
@@ -4180,12 +5104,27 @@ defmodule Strata.UI.App do
   end
 
   def handle_mouse(
-        %__MODULE__{window_size: ws, active_view: active_view} = app,
+        %__MODULE__{active_view: active_view} = app,
         {:scroll, dir, x, y}
       ) do
-    layout = Renderer.layout(ws, active_view)
+    layout = Renderer.layout_for(app)
 
     cond do
+      Map.get(layout, :ai_panel) != nil and inside_area?(x, y, layout.ai_panel) ->
+        if dir in [:up, :scroll_up, :down, :scroll_down] do
+          {allow?, new_lock} = evaluate_scroll_lock(app.scroll_lock, :vertical)
+          app = %{app | scroll_lock: new_lock}
+
+          if allow? do
+            delta = if dir in [:up, :scroll_up], do: -3, else: 3
+            scroll_ai_history(app, layout.ai_panel, delta)
+          else
+            app
+          end
+        else
+          app
+        end
+
       inside_area?(x, y, layout.sidebar) ->
         visible = Sidebar.visible_nodes(app)
         sidebar_viewport_h = max(1, layout.sidebar.height - 2)
@@ -4304,12 +5243,15 @@ defmodule Strata.UI.App do
     end
   end
 
-  def handle_mouse(%__MODULE__{window_size: ws, active_view: active_view} = app, {:click, x, y}) do
-    layout = Renderer.layout(ws, active_view)
+  def handle_mouse(%__MODULE__{} = app, {:click, x, y}) do
+    layout = Renderer.layout_for(app)
 
     cond do
       inside_area?(x, y, layout.footer) ->
         handle_footer_click(app, x, y, layout.footer)
+
+      Map.get(layout, :ai_panel) != nil and inside_area?(x, y, layout.ai_panel) ->
+        handle_ai_panel_click(app, x, y, layout.ai_panel)
 
       inside_area?(x, y, layout.sidebar) ->
         app =
@@ -4431,10 +5373,74 @@ defmodule Strata.UI.App do
 
   defp cancel_inline_edit_if_active(app), do: app
 
+  defp scroll_ai_history(app, ai_area, delta) do
+    %{history_area: hist_area} = AIChatPanel.areas(ai_area, input_text: app.ai_input_text)
+    tab = active_tab(app)
+    data = AIChatPanel.history_data(app, tab, hist_area)
+    new_scroll = max(0, min(data.scroll_top + delta, data.max_scroll))
+    %{app | ai_history_scroll: new_scroll}
+  end
+
+  defp handle_ai_panel_click(app, x, y, ai_area) do
+    %{history_area: hist_area, input_area: inp_area} =
+      AIChatPanel.areas(ai_area, input_text: app.ai_input_text)
+
+    tab = active_tab(app)
+
+    cond do
+      inp_area != nil and inside_area?(x, y, inp_area) ->
+        %{app | focus: :ai_panel, ai_panel_focus: :input}
+
+      inside_area?(x, y, hist_area) ->
+        data = AIChatPanel.history_data(app, tab, hist_area)
+        rel_y = y - hist_area.y - 1
+
+        if rel_y >= 0 and rel_y < data.viewport_h do
+          clicked_line = data.scroll_top + rel_y
+
+          case Enum.find(data.turn_ranges, fn {_idx, s, e} ->
+                 clicked_line >= s and clicked_line <= e
+               end) do
+            {msg_idx, _s, _e} ->
+              %{app | focus: :ai_panel, ai_panel_focus: :history}
+              |> apply_ai_history_turn(msg_idx)
+
+            nil ->
+              %{app | focus: :ai_panel, ai_panel_focus: :history}
+          end
+        else
+          %{app | focus: :ai_panel, ai_panel_focus: :history}
+        end
+
+      true ->
+        %{app | focus: :ai_panel}
+    end
+  end
+
   defp handle_modal_click(%__MODULE__{modals: [top | rest]} = app, _x, y, modal_area) do
     rel_y = y - modal_area.y - 1
 
     cond do
+      match?(%SQLTabPickerModal{}, top) and rel_y >= 0 ->
+        inner_h = max(1, modal_area.height - 2)
+        items = SQLTabPickerModal.visible_items(top)
+
+        scroll_top =
+          if length(items) > inner_h, do: max(0, top.selected_index - inner_h + 1), else: 0
+
+        case Enum.at(items, scroll_top + rel_y) do
+          %{kind: :new_blank} ->
+            {_popped, app} = pop_modal(app)
+            open_tab(app)
+
+          %{kind: :closed_tab, tab: closed_tab} ->
+            {_popped, app} = pop_modal(app)
+            reopen_closed_tab(app, closed_tab)
+
+          nil ->
+            app
+        end
+
       match?(%ActionsModal{}, top) and rel_y >= 0 ->
         inner_h = max(1, modal_area.height - 2)
 
@@ -4483,6 +5489,25 @@ defmodule Strata.UI.App do
           :test_button ->
             updated_top = %{top | focused_field: :test_button}
             test_ssh_async(%{app | modals: [updated_top | rest]})
+
+          field ->
+            %{app | modals: [%{top | focused_field: field} | rest]}
+        end
+
+      match?(%AISettingsModal{}, top) and rel_y >= 0 ->
+        fields = AISettingsModal.visible_fields()
+
+        case Enum.at(fields, rel_y) do
+          nil ->
+            app
+
+          field when field in [:save_button, :cancel_button] ->
+            updated_top = %{top | focused_field: field}
+            handle_key(%{app | modals: [updated_top | rest]}, :enter)
+
+          :test_button ->
+            updated_top = %{top | focused_field: :test_button}
+            test_ai_cli_async(%{app | modals: [updated_top | rest]})
 
           field ->
             %{app | modals: [%{top | focused_field: field} | rest]}
@@ -4763,6 +5788,7 @@ defmodule Strata.UI.App do
   defp map_footer_key(:"ctrl+n"), do: {:ctrl, "n"}
   defp map_footer_key(:"ctrl+g"), do: {:ctrl, "g"}
   defp map_footer_key(:"ctrl+l"), do: {:ctrl, "l"}
+  defp map_footer_key(:"ctrl+o"), do: {:ctrl, "o"}
 
   defp map_footer_key(k)
        when k in [:a, :c, :d, :e, :f, :r, :s, :v, :E, :I, :S, :/, :"?"],
@@ -4820,7 +5846,10 @@ defmodule Strata.UI.App do
 
     cond do
       tb.new_sql_rect != nil and inside_area?(x, tabs_area.y, tb.new_sql_rect) ->
-        open_tab(app)
+        request_new_sql_tab(app)
+
+      tb[:ai_sql_rect] != nil and inside_area?(x, tabs_area.y, tb.ai_sql_rect) ->
+        open_ai_sql_prompt(app)
 
       true ->
         case Enum.find(tb.tabs, &inside_area?(x, tabs_area.y, &1.rect)) do

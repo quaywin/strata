@@ -24,12 +24,6 @@ defmodule Strata.UI.Components.SSHModal do
     :cancel_button
   ]
 
-  @doc """
-  Returns the visible ordered fields for SSHModal. `:delete_button` is shown when editing a saved profile.
-  """
-  def visible_fields(%__MODULE__{id: id}) when is_binary(id) and id != "", do: @fields
-  def visible_fields(_modal), do: List.delete(@fields, :delete_button)
-
   defstruct [
     :id,
     name: "New SSH Profile",
@@ -44,6 +38,12 @@ defmodule Strata.UI.Components.SSHModal do
     status: :idle,
     status_message: nil
   ]
+
+  @doc """
+  Returns the visible ordered fields for SSHModal. `:delete_button` is shown when editing a saved profile.
+  """
+  def visible_fields(%__MODULE__{id: id}) when is_binary(id) and id != "", do: @fields
+  def visible_fields(_modal), do: List.delete(@fields, :delete_button)
 
   @type t :: %__MODULE__{
           id: String.t() | nil,

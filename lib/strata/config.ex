@@ -8,6 +8,8 @@ defmodule Strata.Config do
   @default_dir "~/.strata"
   @default_file "config.db"
   @default_ssh_file "ssh_profiles.db"
+  @default_ai_file "ai_settings.json"
+  @default_workspace_file "workspace.json"
 
   @doc """
   Returns the path to the main configuration database file.
@@ -41,6 +43,30 @@ defmodule Strata.Config do
       Path.join(System.tmp_dir!(), "strata_test_profiles.json")
     else
       Path.expand("~/.config/strata/profiles.json")
+    end
+  end
+
+  @doc """
+  Returns the path to the persisted AI assistant settings JSON file.
+  """
+  def ai_settings_path do
+    if @env == :test do
+      Path.join(System.tmp_dir!(), "strata_test_ai_settings.json")
+    else
+      System.get_env("STRATA_AI_SETTINGS_PATH") ||
+        Path.join(Path.expand(@default_dir), @default_ai_file)
+    end
+  end
+
+  @doc """
+  Returns the path to the persisted SQL query tabs & AI workspace JSON file.
+  """
+  def workspace_path do
+    if @env == :test do
+      Path.join(System.tmp_dir!(), "strata_test_workspace.json")
+    else
+      System.get_env("STRATA_WORKSPACE_PATH") ||
+        Path.join(Path.expand(@default_dir), @default_workspace_file)
     end
   end
 end

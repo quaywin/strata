@@ -13,6 +13,8 @@ defmodule Strata.UI.KeyRegistry do
   def determine_context(%{focus: :sidebar, sidebar_filter_active: true}), do: :sidebar_filter
   def determine_context(%{focus: :sidebar}), do: :sidebar
   def determine_context(%{focus: :editor}), do: :editor
+  def determine_context(%{focus: :ai_panel, ai_panel_focus: :history}), do: :ai_panel_history
+  def determine_context(%{focus: :ai_panel}), do: :ai_panel_input
 
   def determine_context(%{focus: :datagrid, datagrid_state: %{editing_cell: {_, _}}}),
     do: :datagrid_editing
@@ -69,10 +71,32 @@ defmodule Strata.UI.KeyRegistry do
         [
           {"Ctrl+Enter", "Run"},
           {"Ctrl+Space", "Complete"},
+          {"Ctrl+O", "AI"},
           {"Ctrl+T", "New Tab"},
           {"Ctrl+W", "Close"},
           {"Ctrl+←/→", "Tabs"},
           {"Ctrl+P", "Actions"}
+        ]
+
+      :ai_panel_input ->
+        [
+          {"Enter", "Send"},
+          {"Shift+Enter", "Newline"},
+          {"↑", "History"},
+          {"Ctrl+L", "Reset"},
+          {"Tab", "Pane"},
+          {"Ctrl+O", "Close"},
+          {"Esc", "Editor"}
+        ]
+
+      :ai_panel_history ->
+        [
+          {"↑/↓", "Pick Turn"},
+          {"Enter", "Apply SQL"},
+          {"Ctrl+L", "Reset"},
+          {"Tab", "Pane"},
+          {"Ctrl+O", "Close"},
+          {"Esc", "Input"}
         ]
 
       :datagrid_editing ->

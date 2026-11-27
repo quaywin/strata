@@ -24,6 +24,8 @@ defmodule Strata.Application do
       {Phoenix.PubSub, name: Strata.PubSub},
       Strata.SSHProfileStore,
       Strata.ConfigStore,
+      Strata.AISettingsStore,
+      Strata.WorkspaceStore,
       Strata.DataStore,
       {Registry, keys: :unique, name: Strata.ConnectionRegistry},
       Strata.ConnectionSupervisor

@@ -4,6 +4,7 @@ defmodule Strata.UI.Renderer do
   Partitions terminal window into grid chunks and dispatches rendering for panes and modals.
   """
 
+  alias Strata.UI.Components.AIChatPanel
   alias Strata.UI.Components.DataGrid
   alias Strata.UI.Components.Footer
   alias Strata.UI.Components.Sidebar
@@ -17,12 +18,14 @@ defmodule Strata.UI.Renderer do
         }
 
   @doc """
-  Computes layout grid rectangles for main UI panes based on window size {width, height} and active_view.
+  Computes layout grid rectangles for main UI panes based on window size `{width, height}`,
+  `active_view`, and optional `[ai_panel_open: boolean()]`.
   """
-  @spec layout({pos_integer(), pos_integer()}, :table_view | :query_view) :: map()
-  def layout(window_size, active_view \\ :query_view)
+  @spec layout({pos_integer(), pos_integer()}, :table_view | :query_view, keyword()) :: map()
+  def layout(window_size, active_view \\ :query_view, opts \\ [])
 
-  def layout({width, height}, active_view) when is_integer(width) and is_integer(height) do
+  def layout({width, height}, active_view, opts)
+      when is_integer(width) and is_integer(height) do
     footer_height = 1
 
     content_height = max(1, height - footer_height)
@@ -32,6 +35,10 @@ defmodule Strata.UI.Renderer do
     tab_bar_height = 1
     right_body_height = max(1, content_height - tab_bar_height)
     right_body_y = tab_bar_height
+
+    ai_open? =
+      active_view == :query_view and Keyword.get(opts, :ai_panel_open, false) and
+        right_width >= 58
 
     {editor_height, datagrid_height, datagrid_y} =
       case active_view do
@@ -44,6 +51,23 @@ defmodule Strata.UI.Renderer do
           {eh, dh, right_body_y + eh}
       end
 
+    {editor_width, ai_panel} =
+      if ai_open? do
+        ai_w = min(48, max(30, round(right_width * 0.38)))
+        ed_w = max(24, right_width - ai_w)
+
+        panel = %{
+          x: sidebar_width + ed_w,
+          y: right_body_y,
+          width: ai_w,
+          height: editor_height
+        }
+
+        {ed_w, panel}
+      else
+        {right_width, nil}
+      end
+
     %{
       header: %{x: 0, y: 0, width: width, height: 0},
       sidebar: %{x: 0, y: 0, width: sidebar_width, height: content_height},
@@ -51,7 +75,7 @@ defmodule Strata.UI.Renderer do
       editor: %{
         x: sidebar_width,
         y: right_body_y,
-        width: right_width,
+        width: editor_width,
         height: editor_height
       },
       datagrid: %{
@@ -60,6 +84,7 @@ defmodule Strata.UI.Renderer do
         width: right_width,
         height: datagrid_height
       },
+      ai_panel: ai_panel,
       footer: %{
         x: 0,
         y: height - footer_height,
@@ -67,6 +92,18 @@ defmodule Strata.UI.Renderer do
         height: footer_height
       }
     }
+  end
+
+  @doc """
+  Computes layout grid rectangles from the current `app` state (including `ai_panel_open`).
+  """
+  @spec layout_for(map()) :: map()
+  def layout_for(app) do
+    layout(
+      Map.get(app, :window_size, {120, 40}),
+      Map.get(app, :active_view, :query_view),
+      ai_panel_open: Map.get(app, :ai_panel_open, false)
+    )
   end
 
   @doc """
@@ -95,13 +132,25 @@ defmodule Strata.UI.Renderer do
   without duplicating formatting or wrapping logic.
   """
   def render_scene(app) do
-    areas = layout(app.window_size, Map.get(app, :active_view, :query_view))
+    areas = layout_for(app)
 
     header_item = render_header(app, areas.header)
     sidebar_item = render_sidebar(app, areas.sidebar)
     tabs_item = render_tab_bar(app, areas.tabs)
     {editor_item, editor_regions} = render_editor_with_meta(app, areas.editor)
     {datagrid_item, datagrid_regions} = render_datagrid_with_meta(app, areas.datagrid)
+
+    ai_panel_items =
+      case Map.get(areas, :ai_panel) do
+        %{} = ai_area ->
+          active_id = Map.get(app, :active_tab_id)
+          tab = Enum.find(Map.get(app, :tabs, []), &(Map.get(&1, :id) == active_id))
+          AIChatPanel.render(app, tab, ai_area)
+
+        nil ->
+          []
+      end
+
     footer_item = render_footer(app, areas.footer)
 
     {modal_items, modal_regions} = render_modal_with_meta(app, app.window_size)
@@ -118,8 +167,8 @@ defmodule Strata.UI.Renderer do
 
     widgets =
       List.flatten(
-        [header_item, sidebar_item, tabs_item, editor_item, datagrid_item, footer_item] ++
-          modal_items ++ selection_items
+        [header_item, sidebar_item, tabs_item, editor_item, datagrid_item] ++
+          ai_panel_items ++ [footer_item] ++ modal_items ++ selection_items
       )
 
     %{
@@ -148,20 +197,23 @@ defmodule Strata.UI.Renderer do
   end
 
   @doc """
-  Computes exact screen rects for each open tab, its `[×]` close button, and the
-  `[+ SQL]` action button inside `tabs_area`. Shared between `render_tab_bar/2`
-  and mouse click handling in `Strata.UI.App`.
+  Computes exact screen rects for each open tab, its `[×]` close button, the
+  `[+ SQL]` action button, and the `[AI]` assistant button inside `tabs_area`.
+  Shared between `render_tab_bar/2` and mouse click handling in `Strata.UI.App`.
   """
   @spec tab_bar_layout(map(), rect()) :: %{
           tabs: [map()],
-          new_sql_rect: rect() | nil
+          new_sql_rect: rect() | nil,
+          ai_sql_rect: rect() | nil
         }
   def tab_bar_layout(app, tabs_area) do
     tabs = Map.get(app, :tabs, [])
     active_id = Map.get(app, :active_tab_id)
     new_btn_label = " [+ SQL] "
     new_btn_w = String.length(new_btn_label)
-    max_tabs_right = tabs_area.x + tabs_area.width - new_btn_w - 1
+    ai_btn_label = " [AI] "
+    ai_btn_w = String.length(ai_btn_label)
+    max_tabs_right = tabs_area.x + tabs_area.width - new_btn_w - ai_btn_w - 1
 
     visible_tabs = window_tabs_to_fit(tabs, active_id, max(14, max_tabs_right - tabs_area.x))
 
@@ -206,7 +258,16 @@ defmodule Strata.UI.Renderer do
         nil
       end
 
-    %{tabs: Enum.reverse(rev_items), new_sql_rect: new_sql_rect}
+    ai_x = if new_sql_rect, do: cursor_x + new_btn_w, else: cursor_x
+
+    ai_sql_rect =
+      if ai_x + ai_btn_w <= tabs_area.x + tabs_area.width do
+        %{x: ai_x, y: tabs_area.y, width: ai_btn_w, height: 1}
+      else
+        nil
+      end
+
+    %{tabs: Enum.reverse(rev_items), new_sql_rect: new_sql_rect, ai_sql_rect: ai_sql_rect}
   end
 
   defp window_tabs_to_fit([], _active_id, _avail_w), do: []
@@ -319,7 +380,21 @@ defmodule Strata.UI.Renderer do
           []
       end
 
-    [bg_widget] ++ tab_widgets ++ new_btn_widgets
+    ai_btn_widgets =
+      case tb.ai_sql_rect do
+        %{} = r ->
+          [
+            {%ExRatatui.Widgets.Paragraph{
+               text: " [AI] ",
+               style: %Style{fg: :magenta, modifiers: [:bold]}
+             }, to_rect(r)}
+          ]
+
+        nil ->
+          []
+      end
+
+    [bg_widget] ++ tab_widgets ++ new_btn_widgets ++ ai_btn_widgets
   end
 
   defp to_rect(%{x: x, y: y, width: w, height: h}) do
@@ -1854,6 +1929,10 @@ defmodule Strata.UI.Renderer do
         match?(%Strata.UI.Components.ActionsModal{}, top) ->
           {64, max(10, min(22, length(top.items) + 4))}
 
+        match?(%Strata.UI.Components.SQLTabPickerModal{}, top) ->
+          item_cnt = length(Strata.UI.Components.SQLTabPickerModal.visible_items(top))
+          {80, max(10, min(22, item_cnt + 4))}
+
         match?(%Strata.UI.Components.ExportModal{}, top) ->
           {74, 18}
 
@@ -1862,6 +1941,9 @@ defmodule Strata.UI.Renderer do
 
         match?(%Strata.UI.Components.SSHModal{}, top) ->
           {72, 22}
+
+        match?(%Strata.UI.Components.AISettingsModal{}, top) ->
+          {74, 18}
 
         match?(%{type: :confirm_delete_connection}, top) ->
           {54, 9}
@@ -1902,6 +1984,37 @@ defmodule Strata.UI.Renderer do
 
         {[{clear_widget, m_rect}, {list_widget, m_rect}], []}
 
+      [%Strata.UI.Components.SQLTabPickerModal{} = picker | _] ->
+        modal_area = modal_area_for(app, window_size)
+        m_rect = to_rect(modal_area)
+        clear_widget = %ExRatatui.Widgets.Clear{}
+        items = Strata.UI.Components.SQLTabPickerModal.visible_items(picker)
+        list_items = Enum.map(items, & &1.label)
+        sel_idx = min(picker.selected_index, max(0, length(list_items) - 1))
+
+        filter_part =
+          if String.trim(picker.filter || "") != "",
+            do: " [Filter: #{picker.filter}]",
+            else: ""
+
+        title =
+          " ✨ SQL Tabs#{filter_part} (↑/↓ · Enter Open · Ctrl+D Remove · Type Search · Esc) "
+
+        list_widget = %ExRatatui.Widgets.List{
+          items: list_items,
+          selected: sel_idx,
+          highlight_symbol: "▸ ",
+          highlight_style: %ExRatatui.Style{fg: :black, bg: :yellow, modifiers: [:bold]},
+          block: %ExRatatui.Widgets.Block{
+            title: title,
+            borders: [:all],
+            border_type: :rounded,
+            border_style: %ExRatatui.Style{fg: :cyan}
+          }
+        }
+
+        {[{clear_widget, m_rect}, {list_widget, m_rect}], []}
+
       [top | _] ->
         modal_area = modal_area_for(app, window_size)
         m_rect = to_rect(modal_area)
@@ -1916,6 +2029,9 @@ defmodule Strata.UI.Renderer do
 
             %Strata.UI.Components.SSHModal{} = ssh_modal ->
               Strata.UI.Components.SSHModal.render(ssh_modal, modal_area)
+
+            %Strata.UI.Components.AISettingsModal{} = ai_settings_modal ->
+              Strata.UI.Components.AISettingsModal.render(ai_settings_modal, modal_area)
 
             map when is_map(map) ->
               map

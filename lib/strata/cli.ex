@@ -105,7 +105,7 @@ defmodule Strata.CLI do
   """
   @spec tui_start_opts() :: keyword()
   def tui_start_opts do
-    [name: Strata.UI.App, terminal: true, mouse_capture: true]
+    [name: Strata.UI.App, terminal: true, mouse_capture: true, keyboard_enhancement: true]
   end
 
   defp ensure_native_loaded! do

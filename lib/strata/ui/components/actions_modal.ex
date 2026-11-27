@@ -37,7 +37,10 @@ defmodule Strata.UI.Components.ActionsModal do
 
         _ ->
           datagrid_items(grid, data_source, inspector_open?) ++
-            [%{id: :sidebar_ssh, label: "SSH Tunnel Profiles", shortcut: "Sidebar S"}] ++
+            [
+              %{id: :ai_settings, label: "AI Assistant Settings", shortcut: "Actions"},
+              %{id: :sidebar_ssh, label: "SSH Tunnel Profiles", shortcut: "Sidebar S"}
+            ] ++
             navigation_items(data_source)
       end
 
@@ -53,16 +56,19 @@ defmodule Strata.UI.Components.ActionsModal do
       %{id: :sidebar_refresh, label: "Refresh Connection Schema", shortcut: "r / F5"},
       %{id: :sidebar_filter, label: "Filter Sidebar Tree", shortcut: "/"},
       %{id: :sidebar_expand_all, label: "Expand All Nodes", shortcut: "o"},
-      %{id: :sidebar_collapse_all, label: "Collapse All Nodes", shortcut: "c"}
+      %{id: :sidebar_collapse_all, label: "Collapse All Nodes", shortcut: "c"},
+      %{id: :ai_settings, label: "AI Assistant Settings", shortcut: "Actions"}
     ]
   end
 
   defp editor_items do
     [
       %{id: :run_query, label: "Run SQL Query", shortcut: "Ctrl+Enter"},
+      %{id: :ai_sql_assistant, label: "AI SQL Assistant", shortcut: "Ctrl+O / F6"},
       %{id: :trigger_autocomplete, label: "Trigger SQL Autocomplete", shortcut: "Ctrl+Space"},
       %{id: :clear_editor, label: "Clear SQL Editor", shortcut: "Ctrl+K"},
-      %{id: :focus_grid, label: "Focus Result Grid", shortcut: "Esc"}
+      %{id: :focus_grid, label: "Focus Result Grid", shortcut: "Esc"},
+      %{id: :ai_settings, label: "AI Assistant Settings", shortcut: "Actions"}
     ]
   end
 

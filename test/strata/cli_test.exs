@@ -15,10 +15,11 @@ defmodule Strata.CLITest do
     assert Strata.CLI.version() != ""
   end
 
-  test "tui_start_opts enables terminal and mouse capture" do
+  test "tui_start_opts enables terminal, mouse capture, and keyboard enhancement" do
     opts = Strata.CLI.tui_start_opts()
     assert Keyword.get(opts, :name) == Strata.UI.App
     assert Keyword.get(opts, :terminal) == true
     assert Keyword.get(opts, :mouse_capture) == true
+    assert Keyword.get(opts, :keyboard_enhancement) == true
   end
 end

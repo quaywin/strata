@@ -46,7 +46,7 @@ defmodule Strata.UI.RendererTest do
       widgets = Renderer.render(app)
 
       assert is_list(widgets)
-      assert length(widgets) == 10
+      assert length(widgets) == 11
 
       Enum.each(widgets, fn {widget, rect} ->
         assert is_struct(rect, ExRatatui.Layout.Rect)
@@ -63,8 +63,8 @@ defmodule Strata.UI.RendererTest do
 
       assert is_list(widgets)
 
-      # 10 main widgets (incl. unified tab bar with [+ SQL] and [AI]) + 2 modal widgets (Clear + Paragraph)
-      assert length(widgets) == 12
+      # 11 main widgets (incl. unified tab bar with [+ SQL] and SQL editor [Run] / [AI]) + 2 modal widgets (Clear + Paragraph)
+      assert length(widgets) == 13
 
       {modal_para, modal_rect} = List.last(widgets)
       assert is_struct(modal_rect, ExRatatui.Layout.Rect)

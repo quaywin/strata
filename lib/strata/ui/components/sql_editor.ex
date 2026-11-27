@@ -138,33 +138,30 @@ defmodule Strata.UI.Components.SQLEditor do
 
     inserted_lines = String.split(text, "\n")
 
-    new_lines =
+    {new_lines, new_cursor} =
       case inserted_lines do
         [single] ->
-          List.replace_at(lines, row, prefix <> single <> suffix)
+          combined_prefix = String.normalize(prefix <> single, :nfc)
+          combined_line = String.normalize(combined_prefix <> suffix, :nfc)
+          {List.replace_at(lines, row, combined_line), {row, String.length(combined_prefix)}}
 
         [first | rest] ->
           {middle, [last]} = Enum.split(rest, max(0, length(rest) - 1))
-          first_combined = prefix <> first
-          last_combined = last <> suffix
+          first_combined = String.normalize(prefix <> first, :nfc)
+          last_prefix = String.normalize(last, :nfc)
+          last_combined = String.normalize(last_prefix <> suffix, :nfc)
 
           {before_lines, after_lines} = Enum.split(lines, row)
           # after_lines contains target_line as first item, drop it
           tail_after = Enum.drop(after_lines, 1)
 
-          before_lines ++ [first_combined] ++ middle ++ [last_combined] ++ tail_after
+          updated =
+            before_lines ++ [first_combined] ++ middle ++ [last_combined] ++ tail_after
+
+          {updated, {row + length(inserted_lines) - 1, String.length(last_prefix)}}
       end
 
-    new_row = row + length(inserted_lines) - 1
-
-    new_col =
-      if length(inserted_lines) == 1 do
-        col + String.length(text)
-      else
-        String.length(List.last(inserted_lines))
-      end
-
-    {Enum.join(new_lines, "\n"), {new_row, new_col}}
+    {Enum.join(new_lines, "\n"), new_cursor}
   end
 
   @doc """
@@ -844,8 +841,7 @@ defmodule Strata.UI.Components.SQLEditor do
   @spec tab_titles(map()) :: [String.t()]
   def tab_titles(app) do
     Enum.map(Enum.with_index(app.tabs), fn {t, idx} ->
-      star = if t.id == app.active_tab_id, do: "★ ", else: ""
-      "#{star}#{idx + 1}: #{t.name}"
+      "#{idx + 1}: #{t.name}"
     end)
   end
 

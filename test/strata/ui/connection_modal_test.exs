@@ -191,13 +191,37 @@ defmodule Strata.UI.Components.ConnectionModalTest do
     test "hides network/auth fields for sqlite driver and uses DB File Path label" do
       sqlite_modal = ConnectionModal.new(driver: :sqlite, database: "/tmp/app.db")
       fields = ConnectionModal.visible_fields(:sqlite)
-      assert fields == [:name, :driver, :database, :test_button, :save_button, :cancel_button]
+
+      assert fields == [
+               :name,
+               :driver,
+               :database,
+               :auto_connect,
+               :test_button,
+               :save_button,
+               :cancel_button
+             ]
 
       rendered = ConnectionModal.render(sqlite_modal, %{width: 72, height: 22})
       labels = Enum.map(rendered.fields, & &1.label)
       assert "DB File Path" in labels
+      assert "Auto-Connect" in labels
       refute "Host" in labels
       refute "Password" in labels
+    end
+
+    test "toggles auto_connect and persists it to ConnectionProfile" do
+      modal = ConnectionModal.new()
+      assert modal.auto_connect == false
+
+      toggled = ConnectionModal.handle_key(%{modal | focused_field: :auto_connect}, :space)
+      assert toggled.auto_connect == true
+
+      prof = ConnectionModal.to_profile(toggled)
+      assert prof.auto_connect == true
+
+      reopened = ConnectionModal.new(profile: prof)
+      assert reopened.auto_connect == true
     end
   end
 

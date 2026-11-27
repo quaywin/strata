@@ -92,16 +92,31 @@ defmodule Strata.UI.AIIntegrationTest do
       assert Enum.any?(items, &(&1.id == :ai_settings))
     end
 
-    test "toggles Right AI panel via tab bar [AI] click and tracks multi-turn SQL results" do
+    test "toggles Right AI panel via bottom SQL editor [AI] click and tracks multi-turn SQL results" do
       app = App.new(window_size: {120, 40}) |> App.open_tab(name: "Query 1", content: "")
       tab_id = app.active_tab_id
 
       layout = Renderer.layout_for(app)
       tb = Renderer.tab_bar_layout(app, layout.tabs)
-      assert is_map(tb.ai_sql_rect)
+      refute Map.has_key?(tb, :ai_sql_rect)
 
-      # Clicking [AI] opens the Right AI Chat Panel and focuses input
-      opened = App.handle_mouse(app, {:click, tb.ai_sql_rect.x + 1, tb.ai_sql_rect.y})
+      ai_rect = Renderer.editor_ai_button_rect(app, layout.editor)
+      run_rect = Renderer.editor_run_button_rect(app, layout.editor)
+      assert is_map(ai_rect)
+      assert is_map(run_rect)
+      assert ai_rect.y == layout.editor.y + layout.editor.height - 1
+      assert run_rect.y == ai_rect.y
+      assert run_rect.x + run_rect.width < ai_rect.x
+      assert ai_rect.width == String.length(" [AI] ")
+      assert run_rect.width == String.length(" [Run] ")
+      refute Enum.any?(tb.tabs, &String.contains?(&1.label, "*"))
+
+      # Clicking [Run] executes SQL query (empty query warning when blank)
+      ran_empty = App.handle_mouse(app, {:click, run_rect.x + 1, run_rect.y})
+      assert ran_empty.status_message =~ "empty SQL query"
+
+      # Clicking [AI] at bottom of SQL editor opens the Right AI Chat Panel and focuses input
+      opened = App.handle_mouse(app, {:click, ai_rect.x + 1, ai_rect.y})
       assert opened.ai_panel_open == true
       assert opened.focus == :ai_panel
       assert opened.ai_panel_focus == :input
@@ -401,6 +416,108 @@ defmodule Strata.UI.AIIntegrationTest do
       picker_again = App.handle_key(closed_again, {:ctrl, "t"})
       deleted_picker = picker_again |> App.handle_key(:down) |> App.handle_key({:ctrl, "d"})
       assert deleted_picker.closed_tabs == []
+    end
+
+    test "scopes SQLTabPickerModal recent queries to the currently selected database" do
+      prof_a = %Strata.ConnectionProfile{
+        id: "picker_db_a_#{System.unique_integer([:positive])}",
+        name: "DB A",
+        driver: :sqlite,
+        database: ":memory:"
+      }
+
+      prof_b = %Strata.ConnectionProfile{
+        id: "picker_db_b_#{System.unique_integer([:positive])}",
+        name: "DB B",
+        driver: :sqlite,
+        database: ":memory:"
+      }
+
+      :ok = Strata.ConfigStore.put_profile(prof_a)
+      :ok = Strata.ConfigStore.put_profile(prof_b)
+
+      on_exit(fn ->
+        Strata.ConfigStore.delete_profile(prof_a.id)
+        Strata.ConfigStore.delete_profile(prof_b.id)
+      end)
+
+      app = App.new(window_size: {120, 40}, selected_tree_node_id: prof_a.id)
+      # Close a non-empty SQL tab while DB A is selected
+      app_a = App.open_tab(app, name: "A Query", content: "SELECT * FROM a_users;")
+      tab_a_id = app_a.active_tab_id
+      closed_a = App.close_tab(app_a, tab_a_id)
+      assert [%{profile_id: pid_a}] = closed_a.closed_tabs
+      assert pid_a == prof_a.id
+
+      # Switching to DB B and pressing Ctrl+T opens a blank tab immediately (no DB A queries shown)
+      on_db_b = %{closed_a | selected_tree_node_id: prof_b.id}
+      new_on_b = App.handle_key(on_db_b, {:ctrl, "t"})
+      assert new_on_b.modals == []
+      assert Enum.find(new_on_b.tabs, &(&1.id == new_on_b.active_tab_id)).profile_id == prof_b.id
+
+      # Close a query on DB B as well
+      b_tab_id = new_on_b.active_tab_id
+
+      b_with_sql =
+        Enum.map(new_on_b.tabs, fn t ->
+          if t.id == b_tab_id, do: %{t | content: "SELECT * FROM b_orders;"}, else: t
+        end)
+        |> then(&%{new_on_b | tabs: &1})
+
+      closed_both = App.close_tab(b_with_sql, b_tab_id)
+      assert length(closed_both.closed_tabs) == 2
+
+      # Picker on DB B only shows DB B's closed query
+      picker_b = App.handle_key(%{closed_both | selected_tree_node_id: prof_b.id}, {:ctrl, "t"})
+      assert [%SQLTabPickerModal{} = modal_b] = picker_b.modals
+      items_b = SQLTabPickerModal.visible_items(modal_b)
+      assert length(items_b) == 2
+      assert Enum.at(items_b, 1).label =~ "SELECT * FROM b_orders;"
+      refute Enum.any?(items_b, &(&1.label =~ "a_users"))
+
+      # Picker on DB A only shows DB A's closed query
+      picker_a = App.handle_key(%{closed_both | selected_tree_node_id: prof_a.id}, {:ctrl, "t"})
+      assert [%SQLTabPickerModal{} = modal_a] = picker_a.modals
+      items_a = SQLTabPickerModal.visible_items(modal_a)
+      assert length(items_a) == 2
+      assert Enum.at(items_a, 1).label =~ "SELECT * FROM a_users;"
+      refute Enum.any?(items_a, &(&1.label =~ "b_orders"))
+
+      # Deleting DB A's closed entry does NOT remove DB B's closed entry
+      after_del_a = picker_a |> App.handle_key(:down) |> App.handle_key({:ctrl, "d"})
+      assert [%{profile_id: remaining_pid}] = after_del_a.closed_tabs
+      assert remaining_pid == prof_b.id
+    end
+
+    test "handles Vietnamese NFC, NFD combining marks, Telex backspace, and multi-grapheme IME input in Ask AI" do
+      alias ExRatatui.Event.Key
+
+      app = App.new(window_size: {120, 40}, ai_panel_open: true, focus: :ai_panel)
+
+      # 1. Telex-style backspace + precomposed UTF-8: t -> o -> backspace -> ô -> i
+      {:noreply, t1} = App.handle_event(%Key{code: "t", kind: "press"}, app)
+      {:noreply, t2} = App.handle_event(%Key{code: "o", kind: "press"}, t1)
+      {:noreply, t3} = App.handle_event(%Key{code: "backspace", kind: "press"}, t2)
+      {:noreply, t4} = App.handle_event(%Key{code: "ô", kind: "press"}, t3)
+      {:noreply, t5} = App.handle_event(%Key{code: "i", kind: "press"}, t4)
+
+      assert t5.ai_input_text == "tôi"
+      assert t5.ai_input_cursor == 3
+
+      # 2. NFD combining mark inserted in the middle normalizes to NFC and keeps exact cursor position
+      mid = %{app | ai_input_text: "ab", ai_input_cursor: 1}
+      {:noreply, m1} = App.handle_event(%Key{code: "\u0301", kind: "press"}, mid)
+      assert m1.ai_input_text == "áb"
+      assert m1.ai_input_cursor == 1
+
+      {:noreply, m2} = App.handle_event(%Key{code: "x", kind: "press"}, m1)
+      assert m2.ai_input_text == "áxb"
+      assert m2.ai_input_cursor == 2
+
+      # 3. Multi-grapheme committed IME text event is accepted cleanly
+      {:noreply, ime} = App.handle_event(%Key{code: "tiếng Việt", kind: "press"}, app)
+      assert ime.ai_input_text == "tiếng Việt"
+      assert ime.ai_input_cursor == 10
     end
   end
 end

@@ -177,13 +177,11 @@ defmodule Strata.UI.Renderer do
     }
   end
 
-  defp tab_label_parts(tab, active_id) do
+  defp tab_label_parts(tab, _active_id) do
     kind = Map.get(tab, :kind, :query)
-    active? = tab.id == active_id
 
     # Single-column BMP symbols guarantee display width == String.length for exact click hit-testing
     icon = if kind == :table, do: "⊞", else: "⌘"
-    prefix = if active?, do: " * ", else: " "
     raw_name = to_string(Map.get(tab, :name, "Tab"))
 
     short_name =
@@ -191,29 +189,26 @@ defmodule Strata.UI.Renderer do
         do: String.slice(raw_name, 0, 17) <> "...",
         else: raw_name
 
-    main = "#{prefix}#{icon} #{short_name} "
+    main = " #{icon} #{short_name} "
     close = "[×] "
     {main, close, String.length(main) + String.length(close)}
   end
 
   @doc """
-  Computes exact screen rects for each open tab, its `[×]` close button, the
-  `[+ SQL]` action button, and the `[AI]` assistant button inside `tabs_area`.
+  Computes exact screen rects for each open tab, its `[×]` close button, and the
+  `[+ SQL]` action button inside `tabs_area`.
   Shared between `render_tab_bar/2` and mouse click handling in `Strata.UI.App`.
   """
   @spec tab_bar_layout(map(), rect()) :: %{
           tabs: [map()],
-          new_sql_rect: rect() | nil,
-          ai_sql_rect: rect() | nil
+          new_sql_rect: rect() | nil
         }
   def tab_bar_layout(app, tabs_area) do
     tabs = Map.get(app, :tabs, [])
     active_id = Map.get(app, :active_tab_id)
     new_btn_label = " [+ SQL] "
     new_btn_w = String.length(new_btn_label)
-    ai_btn_label = " [AI] "
-    ai_btn_w = String.length(ai_btn_label)
-    max_tabs_right = tabs_area.x + tabs_area.width - new_btn_w - ai_btn_w - 1
+    max_tabs_right = tabs_area.x + tabs_area.width - new_btn_w - 1
 
     visible_tabs = window_tabs_to_fit(tabs, active_id, max(14, max_tabs_right - tabs_area.x))
 
@@ -258,16 +253,7 @@ defmodule Strata.UI.Renderer do
         nil
       end
 
-    ai_x = if new_sql_rect, do: cursor_x + new_btn_w, else: cursor_x
-
-    ai_sql_rect =
-      if ai_x + ai_btn_w <= tabs_area.x + tabs_area.width do
-        %{x: ai_x, y: tabs_area.y, width: ai_btn_w, height: 1}
-      else
-        nil
-      end
-
-    %{tabs: Enum.reverse(rev_items), new_sql_rect: new_sql_rect, ai_sql_rect: ai_sql_rect}
+    %{tabs: Enum.reverse(rev_items), new_sql_rect: new_sql_rect}
   end
 
   defp window_tabs_to_fit([], _active_id, _avail_w), do: []
@@ -380,21 +366,7 @@ defmodule Strata.UI.Renderer do
           []
       end
 
-    ai_btn_widgets =
-      case tb.ai_sql_rect do
-        %{} = r ->
-          [
-            {%ExRatatui.Widgets.Paragraph{
-               text: " [AI] ",
-               style: %Style{fg: :magenta, modifiers: [:bold]}
-             }, to_rect(r)}
-          ]
-
-        nil ->
-          []
-      end
-
-    [bg_widget] ++ tab_widgets ++ new_btn_widgets ++ ai_btn_widgets
+    [bg_widget] ++ tab_widgets ++ new_btn_widgets
   end
 
   defp to_rect(%{x: x, y: y, width: w, height: h}) do
@@ -614,13 +586,116 @@ defmodule Strata.UI.Renderer do
           []
         end
 
+      %{run_rect: run_rect, ai_rect: ai_rect} = editor_bottom_buttons(app, area)
+
+      bottom_btn_widgets =
+        []
+        |> then(fn acc ->
+          case run_rect do
+            %{} = r ->
+              acc ++
+                [
+                  {%ExRatatui.Widgets.Paragraph{
+                     text: editor_run_button_label(),
+                     style: %ExRatatui.Style{fg: :green, bg: :black, modifiers: [:bold]}
+                   }, to_rect(r)}
+                ]
+
+            nil ->
+              acc
+          end
+        end)
+        |> then(fn acc ->
+          case ai_rect do
+            %{} = r ->
+              ai_style =
+                if Map.get(app, :ai_panel_open, false) do
+                  %ExRatatui.Style{fg: :black, bg: :magenta, modifiers: [:bold]}
+                else
+                  %ExRatatui.Style{fg: :magenta, bg: :black, modifiers: [:bold]}
+                end
+
+              acc ++
+                [
+                  {%ExRatatui.Widgets.Paragraph{
+                     text: editor_ai_button_label(area),
+                     style: ai_style
+                   }, to_rect(r)}
+                ]
+
+            nil ->
+              acc
+          end
+        end)
+
       regions = wrapped_region_for_rect(area, visible_lines, editor_chunk.gutter_width)
-      {[{paragraph_widget, body_rect}] ++ v_scrollbar ++ completion_items, regions}
+
+      {[{paragraph_widget, body_rect}] ++ v_scrollbar ++ bottom_btn_widgets ++ completion_items,
+       regions}
     else
       widget = %ExRatatui.Widgets.Paragraph{text: ""}
       {{widget, to_rect(area)}, []}
     end
   end
+
+  @doc """
+  Computes clickable `[Run]` and `[AI]` button rects along the bottom border of the SQL Editor.
+  Shared between `render_editor_with_meta/2`, hover pointer checks, and click handling in `Strata.UI.App`.
+  """
+  @spec editor_bottom_buttons(map(), rect()) :: %{run_rect: rect() | nil, ai_rect: rect() | nil}
+  def editor_bottom_buttons(app, %{x: x, y: y, width: w, height: h} = area)
+      when h >= 3 and w >= 10 do
+    if Map.get(app, :active_view, :query_view) == :query_view do
+      ai_label = editor_ai_button_label(area)
+      ai_w = String.length(ai_label)
+      ai_x = max(x + 1, x + w - ai_w - 2)
+
+      ai_rect = %{
+        x: ai_x,
+        y: y + h - 1,
+        width: min(ai_w, max(1, w - 2)),
+        height: 1
+      }
+
+      run_label = editor_run_button_label()
+      run_w = String.length(run_label)
+      run_x = ai_rect.x - run_w - 1
+
+      run_rect =
+        if run_x >= x + 1 do
+          %{
+            x: run_x,
+            y: y + h - 1,
+            width: run_w,
+            height: 1
+          }
+        else
+          nil
+        end
+
+      %{run_rect: run_rect, ai_rect: ai_rect}
+    else
+      %{run_rect: nil, ai_rect: nil}
+    end
+  end
+
+  def editor_bottom_buttons(_app, _area), do: %{run_rect: nil, ai_rect: nil}
+
+  @doc """
+  Computes the clickable `[Run]` button rect along the bottom border of the SQL Editor.
+  """
+  @spec editor_run_button_rect(map(), rect()) :: rect() | nil
+  def editor_run_button_rect(app, area), do: editor_bottom_buttons(app, area).run_rect
+
+  @doc """
+  Computes the clickable `[AI]` button rect along the bottom border of the SQL Editor,
+  or `nil` when the editor is hidden or too small.
+  """
+  @spec editor_ai_button_rect(map(), rect()) :: rect() | nil
+  def editor_ai_button_rect(app, area), do: editor_bottom_buttons(app, area).ai_rect
+
+  defp editor_run_button_label, do: " [Run] "
+  defp editor_ai_button_label(_area), do: " [AI] "
 
   @doc """
   Computes the floating SQL Editor autocomplete popup rect when active, or `nil` when hidden.

@@ -41,31 +41,94 @@ defmodule Strata.SchemaInspector do
   end
 
   @doc """
-  Formats the sidebar connection label as `Name · Database (DRIVER)` when database
-  is set and differs from connection name, or `Name (DRIVER)` otherwise.
+  Formats the sidebar connection label with a leading driver icon, profile name,
+  and target host (or SSH host with a trailing SSH icon `🔑` when tunneled).
   """
   def connection_label(%ConnectionProfile{} = profile) do
     driver = Strata.Adapter.normalize_driver(profile.driver)
-    driver_badge = short_driver_label(driver)
+    icon = driver_icon(driver)
 
     display_name =
       if is_binary(profile.name) and String.trim(profile.name) != "",
         do: String.trim(profile.name),
         else: "Connection"
 
-    raw_db = to_string(profile.database || "") |> String.trim()
+    {target_host, ssh?} = resolve_display_host(profile, driver, display_name)
 
-    db_name =
-      cond do
-        raw_db == "" -> ""
-        driver == :sqlite and raw_db != ":memory:" -> Path.basename(raw_db)
-        true -> raw_db
+    base =
+      if target_host != "" do
+        "#{icon} #{display_name} - #{target_host}"
+      else
+        "#{icon} #{display_name}"
       end
 
-    if db_name != "" and String.downcase(db_name) != String.downcase(display_name) do
-      "#{display_name} · #{db_name} (#{driver_badge})"
-    else
-      "#{display_name} (#{driver_badge})"
+    if ssh?, do: "#{base} 🔑", else: base
+  end
+
+  @doc """
+  Returns the icon representing the given database driver.
+  """
+  def driver_icon(driver) do
+    case Strata.Adapter.normalize_driver(driver) do
+      :postgres -> "🐘"
+      :mysql -> "🐬"
+      :sqlite -> "🪶"
+      _ -> "🗄"
+    end
+  end
+
+  defp resolve_display_host(profile, driver, display_name) do
+    manual_ssh_host =
+      case Map.get(profile, :ssh) do
+        ssh when is_map(ssh) -> ssh |> Map.get(:host) |> to_string() |> String.trim()
+        _ -> ""
+      end
+
+    ssh_id = profile |> Map.get(:ssh_profile_id) |> to_string() |> String.trim()
+
+    cond do
+      manual_ssh_host != "" ->
+        {manual_ssh_host, true}
+
+      ssh_id != "" ->
+        {lookup_ssh_host(ssh_id), true}
+
+      driver == :sqlite ->
+        raw_db = to_string(profile.database || "") |> String.trim()
+
+        db_target =
+          cond do
+            raw_db == "" -> ""
+            raw_db == ":memory:" -> ":memory:"
+            true -> Path.basename(raw_db)
+          end
+
+        if db_target != "" and String.downcase(db_target) != String.downcase(display_name) do
+          {db_target, false}
+        else
+          {"", false}
+        end
+
+      true ->
+        host = to_string(profile.host || "") |> String.trim()
+        {host, false}
+    end
+  end
+
+  defp lookup_ssh_host(ssh_id) do
+    try do
+      case Strata.SSHProfileStore.get_profile(ssh_id) do
+        %{host: sh} when is_binary(sh) ->
+          trimmed = String.trim(sh)
+          if trimmed != "", do: trimmed, else: ssh_id
+
+        _ ->
+          ssh_id
+      end
+    rescue
+      _ -> ssh_id
+    catch
+      :exit, _ -> ssh_id
     end
   end
 

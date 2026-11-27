@@ -1964,5 +1964,115 @@ defmodule Strata.UI.AppTest do
 
       assert [%Strata.UI.Components.AISettingsModal{context_scope: :focused_only}] = ai_app.modals
     end
+
+    test "bootstrap connects only auto_connect profiles, supports on-demand connect, disconnect, and profile reconciliation" do
+      manual_prof = %Strata.ConnectionProfile{
+        id: "lazy_manual_#{System.unique_integer([:positive])}",
+        name: "Manual SQLite",
+        driver: :sqlite,
+        database: ":memory:",
+        auto_connect: false
+      }
+
+      auto_prof = %Strata.ConnectionProfile{
+        id: "lazy_auto_#{System.unique_integer([:positive])}",
+        name: "Auto SQLite",
+        driver: :sqlite,
+        database: ":memory:",
+        auto_connect: true
+      }
+
+      :ok = Strata.ConfigStore.put_profile(manual_prof)
+      :ok = Strata.ConfigStore.put_profile(auto_prof)
+
+      on_exit(fn ->
+        Strata.ConnectionSupervisor.stop_worker(manual_prof.id)
+        Strata.ConnectionSupervisor.stop_worker(auto_prof.id)
+        Strata.ConfigStore.delete_profile(manual_prof.id)
+        Strata.ConfigStore.delete_profile(auto_prof.id)
+      end)
+
+      # 1. App.new builds idle nodes without starting workers
+      app = App.new(focus: :sidebar)
+      manual_node = Enum.find(app.sidebar_nodes, &(&1.id == manual_prof.id))
+      assert [%{id: manual_idle_id}] = manual_node.children
+      assert manual_idle_id == "#{manual_prof.id}_idle"
+      assert {:error, :not_found} = Strata.ConnectionSupervisor.lookup_worker(manual_prof.id)
+      assert {:error, :not_found} = Strata.ConnectionSupervisor.lookup_worker(auto_prof.id)
+
+      # 2. :bootstrap only connects auto_connect: true profiles
+      bootstrapped =
+        case App.handle_info(:bootstrap, app) do
+          {:noreply, s} -> s
+          {:noreply, s, _opts} -> s
+        end
+
+      auto_id = auto_prof.id
+      manual_id = manual_prof.id
+      assert_receive {:connection_schema_loaded, ^auto_id, _loaded_node}, 2_000
+      refute_receive {:connection_schema_loaded, ^manual_id, _}, 100
+
+      assert {:error, :not_found} = Strata.ConnectionSupervisor.lookup_worker(manual_prof.id)
+      assert bootstrapped.connection_statuses[manual_prof.id] == nil
+      assert bootstrapped.connection_statuses[auto_prof.id] == :connecting
+
+      # 3. Pressing Enter on idle connection triggers on-demand connection
+      idle_app = %{bootstrapped | selected_tree_node_id: manual_prof.id}
+
+      {:noreply, connecting_app} =
+        App.handle_event(%ExRatatui.Event.Key{code: "enter", kind: "press"}, idle_app)
+
+      assert connecting_app.connection_statuses[manual_prof.id] == :connecting
+      assert connecting_app.status_message =~ "Connecting"
+
+      assert_receive {:connection_schema_loaded, m_id, loaded_manual_node}, 2_000
+      assert m_id == manual_prof.id
+
+      {:noreply, connected_app} =
+        App.handle_info({:connection_schema_loaded, m_id, loaded_manual_node}, connecting_app)
+
+      assert {:ok, _worker} = Strata.ConnectionSupervisor.lookup_worker(manual_prof.id)
+      assert connected_app.connection_statuses[manual_prof.id] == :connected
+      assert connected_app.status_message =~ "Connected"
+
+      # Offline fallback node clears connecting status and marks :disconnected
+      offline_node = Strata.SchemaInspector.fetch_fallback_nodes(manual_prof, :econnrefused)
+
+      {:noreply, offline_app} =
+        App.handle_info({:connection_schema_loaded, m_id, offline_node}, connecting_app)
+
+      assert offline_app.connection_statuses[manual_prof.id] == :disconnected
+      assert offline_app.status_message =~ "Offline"
+
+      # 4. {:profiles_updated, ...} preserves loaded manual_node and adds new profile as idle
+      extra_prof = %Strata.ConnectionProfile{
+        id: "lazy_extra_#{System.unique_integer([:positive])}",
+        name: "Extra PG",
+        driver: :postgres,
+        host: "127.0.0.1",
+        port: 5432,
+        auto_connect: false
+      }
+
+      {:noreply, reconciled_app} =
+        App.handle_info({:profiles_updated, [manual_prof, auto_prof, extra_prof]}, connected_app)
+
+      preserved_manual = Enum.find(reconciled_app.sidebar_nodes, &(&1.id == manual_prof.id))
+      refute match?([%{id: ^manual_idle_id}], preserved_manual.children)
+      extra_node = Enum.find(reconciled_app.sidebar_nodes, &(&1.id == extra_prof.id))
+      assert [%{id: extra_idle_id}] = extra_node.children
+      assert extra_idle_id == "#{extra_prof.id}_idle"
+
+      # 5. Pressing 'u' disconnects selected connection and resets it back to idle
+      disconnected_app =
+        App.handle_key(%{reconciled_app | selected_tree_node_id: manual_prof.id}, "u")
+
+      assert {:error, :not_found} = Strata.ConnectionSupervisor.lookup_worker(manual_prof.id)
+      assert disconnected_app.connection_statuses[manual_prof.id] == nil
+      assert disconnected_app.status_message =~ "Disconnected"
+      reset_manual = Enum.find(disconnected_app.sidebar_nodes, &(&1.id == manual_prof.id))
+      assert [%{id: reset_idle_id}] = reset_manual.children
+      assert reset_idle_id == "#{manual_prof.id}_idle"
+    end
   end
 end

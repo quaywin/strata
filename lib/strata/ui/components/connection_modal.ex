@@ -17,6 +17,7 @@ defmodule Strata.UI.Components.ConnectionModal do
     :username,
     :password,
     :ssl,
+    :auto_connect,
     :ssh_profile_id
   ]
   @manual_ssh_fields [
@@ -55,6 +56,7 @@ defmodule Strata.UI.Components.ConnectionModal do
     username: "postgres",
     password: "",
     ssl: false,
+    auto_connect: false,
     ssh_mode: :none,
     ssh_profile_id: nil,
     ssh_host: "",
@@ -77,6 +79,7 @@ defmodule Strata.UI.Components.ConnectionModal do
           username: String.t(),
           password: String.t(),
           ssl: boolean(),
+          auto_connect: boolean(),
           ssh_mode: :none | :profile | :manual,
           ssh_profile_id: String.t() | nil,
           ssh_host: String.t(),
@@ -130,6 +133,7 @@ defmodule Strata.UI.Components.ConnectionModal do
           username: profile.username || "",
           password: profile.password || "",
           ssl: Map.get(profile.options || %{}, :ssl, false),
+          auto_connect: Map.get(profile, :auto_connect, false) == true,
           ssh_mode: ssh_mode,
           ssh_profile_id: ssh_id,
           ssh_host: ssh_host,
@@ -147,7 +151,8 @@ defmodule Strata.UI.Components.ConnectionModal do
           database: "postgres",
           username: "postgres",
           password: "",
-          ssl: false
+          ssl: false,
+          auto_connect: false
         }
       end
 
@@ -225,6 +230,7 @@ defmodule Strata.UI.Components.ConnectionModal do
       password: modal.password,
       ssh_profile_id: ssh_profile_id,
       ssh: ssh,
+      auto_connect: modal.auto_connect == true,
       options: %{ssl: modal.ssl}
     }
   end
@@ -233,7 +239,7 @@ defmodule Strata.UI.Components.ConnectionModal do
   Returns the visible ordered field keys for the given driver or `ConnectionModal` struct.
   """
   def visible_fields(%__MODULE__{driver: :sqlite}),
-    do: [:name, :driver, :database] ++ @button_fields
+    do: [:name, :driver, :database, :auto_connect] ++ @button_fields
 
   def visible_fields(%__MODULE__{ssh_mode: :manual}),
     do: @base_fields ++ @manual_ssh_fields ++ @button_fields
@@ -242,7 +248,7 @@ defmodule Strata.UI.Components.ConnectionModal do
     do: @base_fields ++ @button_fields
 
   def visible_fields(:sqlite),
-    do: [:name, :driver, :database] ++ @button_fields
+    do: [:name, :driver, :database, :auto_connect] ++ @button_fields
 
   def visible_fields(_driver),
     do: @base_fields ++ @button_fields
@@ -362,6 +368,12 @@ defmodule Strata.UI.Components.ConnectionModal do
   def handle_key(%__MODULE__{focused_field: :ssl} = modal, key)
       when key in [:space, :enter, :right, :left] do
     %{modal | ssl: not modal.ssl}
+  end
+
+  # Auto-connect on startup toggle
+  def handle_key(%__MODULE__{focused_field: :auto_connect} = modal, key)
+      when key in [:space, :enter, :right, :left] do
+    %{modal | auto_connect: not modal.auto_connect}
   end
 
   # SSH tunnel cycling: (None) -> Manual -> ~/.ssh/config profiles
@@ -661,6 +673,12 @@ defmodule Strata.UI.Components.ConnectionModal do
         label: "SSL Mode",
         key: :ssl,
         value: if(modal.ssl, do: "Enabled", else: "Disabled"),
+        type: :toggle
+      },
+      auto_connect: %{
+        label: "Auto-Connect",
+        key: :auto_connect,
+        value: if(modal.auto_connect, do: "Enabled (On Startup)", else: "Disabled (Manual)"),
         type: :toggle
       },
       ssh_profile_id: %{

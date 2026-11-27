@@ -248,6 +248,9 @@ defmodule Strata.UI.App do
           Enum.empty?(state.modals) ->
         handle_sidebar_action_async(state, mapped_key)
 
+      state.focus == :sidebar and mapped_key == :right and Enum.empty?(state.modals) ->
+        handle_sidebar_right_async(state)
+
       true ->
         new_state = handle_key(state, mapped_key)
         if new_state.quit_requested?, do: {:stop, new_state}, else: {:noreply, new_state}
@@ -556,14 +559,58 @@ defmodule Strata.UI.App do
     end
   end
 
-  defp handle_sidebar_action_async(state, key) do
+  @doc """
+  Disconnects the currently selected sidebar connection by stopping its ConnectionWorker
+  and resetting its sidebar node back to the idle (unconnected) state.
+  """
+  @spec disconnect_selected_connection(t()) :: t()
+  def disconnect_selected_connection(state) do
+    case Sidebar.resolve_profile_for_selection(state) do
+      nil ->
+        %{state | status_message: "No database connection selected"}
+
+      profile ->
+        _ = Strata.ConnectionSupervisor.stop_worker(profile.id)
+
+        updated_nodes =
+          Enum.map(state.sidebar_nodes, fn node ->
+            if node.id == profile.id, do: Sidebar.idle_node(profile), else: node
+          end)
+
+        selected_id =
+          if is_binary(state.selected_tree_node_id) and
+               String.starts_with?(state.selected_tree_node_id, profile.id) do
+            profile.id
+          else
+            state.selected_tree_node_id
+          end
+
+        statuses = Map.delete(state.connection_statuses, profile.id)
+
+        %{
+          state
+          | sidebar_nodes: updated_nodes,
+            selected_tree_node_id: selected_id,
+            connection_statuses: statuses,
+            status_message: "🔌 Disconnected '#{profile.name}'"
+        }
+    end
+  end
+
+  defp handle_sidebar_right_async(state) do
     visible = Sidebar.visible_nodes(state)
     selected_item = Enum.find(visible, &(&1.id == state.selected_tree_node_id))
 
-    offline_or_loading? =
-      selected_item != nil and is_binary(selected_item.id) and
-        (String.ends_with?(selected_item.id, "_status") or
-           String.ends_with?(selected_item.id, "_loading"))
+    if unconnected_sidebar_item?(state, selected_item) do
+      {:noreply, refresh_selected_connection_schema_async(state)}
+    else
+      {:noreply, Sidebar.handle_key(state, :right)}
+    end
+  end
+
+  defp handle_sidebar_action_async(state, key) do
+    visible = Sidebar.visible_nodes(state)
+    selected_item = Enum.find(visible, &(&1.id == state.selected_tree_node_id))
 
     cond do
       key == :f5 ->
@@ -572,7 +619,7 @@ defmodule Strata.UI.App do
       key in ["r", "R"] ->
         {:noreply, refresh_sidebar_selection(state)}
 
-      offline_or_loading? and key in [:enter, :space, " "] ->
+      key in [:enter, :space, " "] and unconnected_sidebar_item?(state, selected_item) ->
         {:noreply, refresh_selected_connection_schema_async(state)}
 
       selected_item && selected_item.type in [:table, :view] ->
@@ -585,6 +632,45 @@ defmodule Strata.UI.App do
         {:noreply, Sidebar.handle_key(state, key)}
     end
   end
+
+  defp unconnected_sidebar_item?(_state, nil), do: false
+
+  defp unconnected_sidebar_item?(state, selected_item) do
+    id = Map.get(selected_item, :id)
+
+    placeholder_child? =
+      is_binary(id) and
+        (String.ends_with?(id, "_idle") or String.ends_with?(id, "_status") or
+           String.ends_with?(id, "_loading"))
+
+    placeholder_conn? =
+      selected_item.type == :connection and
+        connection_node_placeholder?(state.sidebar_nodes, id)
+
+    placeholder_child? or placeholder_conn?
+  end
+
+  defp connection_node_placeholder?(nodes, profile_id) when is_binary(profile_id) do
+    case Enum.find(nodes, &(&1.id == profile_id)) do
+      %{children: [%{id: child_id}]} ->
+        String.ends_with?(to_string(child_id), "_idle") or
+          String.ends_with?(to_string(child_id), "_status")
+
+      _ ->
+        false
+    end
+  end
+
+  defp connection_node_placeholder?(_nodes, _profile_id), do: false
+
+  defp idle_connection_node?(nodes, profile_id) when is_binary(profile_id) do
+    case Enum.find(nodes, &(&1.id == profile_id)) do
+      %{children: [%{id: child_id}]} -> String.ends_with?(to_string(child_id), "_idle")
+      _ -> false
+    end
+  end
+
+  defp idle_connection_node?(_nodes, _profile_id), do: false
 
   defp handle_sidebar_filter_key(state, key) do
     case key do
@@ -615,7 +701,20 @@ defmodule Strata.UI.App do
           |> Map.put(:sidebar_filter_active, false)
           |> load_table_async(target.label)
         else
-          %{state | sidebar_filter_active: false}
+          conn_target =
+            if unconnected_sidebar_item?(state, selected),
+              do: selected,
+              else: Enum.find(visible, &unconnected_sidebar_item?(state, &1))
+
+          cleared = %{state | sidebar_filter_active: false}
+
+          if conn_target do
+            cleared
+            |> Map.put(:selected_tree_node_id, conn_target.id)
+            |> refresh_selected_connection_schema_async()
+          else
+            cleared
+          end
         end
 
       k when is_binary(k) ->
@@ -674,26 +773,31 @@ defmodule Strata.UI.App do
             sidebar_scroll_offset: new_offset
         }
 
-        if target_item.type in [:table, :view] do
-          load_table_async(state, target_item.label)
-        else
-          updated = Sidebar.handle_key(state, :enter)
+        cond do
+          target_item.type in [:table, :view] ->
+            load_table_async(state, target_item.label)
 
-          updated_visible =
-            Sidebar.flatten_visible_nodes(updated.sidebar_nodes, updated.selected_tree_node_id)
+          unconnected_sidebar_item?(state, target_item) ->
+            refresh_selected_connection_schema_async(state)
 
-          updated_sel_idx =
-            Enum.find_index(updated_visible, &(&1.id == updated.selected_tree_node_id)) || 0
+          true ->
+            updated = Sidebar.handle_key(state, :enter)
 
-          final_offset =
-            clamp_sidebar_offset(
-              updated.sidebar_scroll_offset || 0,
-              updated_sel_idx,
-              sidebar_viewport_h,
-              length(updated_visible)
-            )
+            updated_visible =
+              Sidebar.flatten_visible_nodes(updated.sidebar_nodes, updated.selected_tree_node_id)
 
-          %{updated | sidebar_scroll_offset: final_offset}
+            updated_sel_idx =
+              Enum.find_index(updated_visible, &(&1.id == updated.selected_tree_node_id)) || 0
+
+            final_offset =
+              clamp_sidebar_offset(
+                updated.sidebar_scroll_offset || 0,
+                updated_sel_idx,
+                sidebar_viewport_h,
+                length(updated_visible)
+              )
+
+            %{updated | sidebar_scroll_offset: final_offset}
         end
       else
         state
@@ -713,10 +817,19 @@ defmodule Strata.UI.App do
     profiles = safe_list_profiles()
     maybe_start_background_update_check(state)
 
+    auto_profiles = Enum.filter(profiles, &(Map.get(&1, :auto_connect, false) == true))
+
+    state =
+      if profiles == [] do
+        %{state | sidebar_nodes: Sidebar.load_nodes()}
+      else
+        start_schema_stream_tasks(state, auto_profiles)
+      end
+
     if restored? do
-      {:noreply, start_schema_stream_tasks(state, profiles)}
+      {:noreply, state}
     else
-      {:noreply, start_schema_stream_tasks(state, profiles), render?: false}
+      {:noreply, state, render?: false}
     end
   end
 
@@ -730,7 +843,26 @@ defmodule Strata.UI.App do
         n -> state.selected_tree_node_id || n.id
       end
 
-    offline? = String.contains?(to_string(Map.get(new_node, :label, "")), "(Offline")
+    offline_reason = offline_node_message(new_node)
+    offline? = offline_reason != nil
+
+    updated_statuses =
+      Map.put(
+        state.connection_statuses,
+        profile_id,
+        if(offline?, do: :disconnected, else: :connected)
+      )
+
+    updated_status_msg =
+      if String.starts_with?(to_string(state.status_message || ""), "⏳ ") do
+        if offline? do
+          "❌ #{Map.get(new_node, :label, profile_id)}: #{offline_reason}"
+        else
+          "✅ Connected '#{Map.get(new_node, :label, profile_id)}'"
+        end
+      else
+        state.status_message
+      end
 
     if not offline? and Map.get(state, :terminal, false) do
       caller = self()
@@ -752,7 +884,14 @@ defmodule Strata.UI.App do
       end)
     end
 
-    {:noreply, %{state | sidebar_nodes: updated_nodes, selected_tree_node_id: first_id}}
+    {:noreply,
+     %{
+       state
+       | sidebar_nodes: updated_nodes,
+         selected_tree_node_id: first_id,
+         connection_statuses: updated_statuses,
+         status_message: updated_status_msg
+     }}
   end
 
   def handle_info({:columns_prefetched, profile_id, {:ok, entries}}, state)
@@ -769,14 +908,35 @@ defmodule Strata.UI.App do
   end
 
   def handle_info({:profiles_updated, profiles}, state) when is_list(profiles) do
-    nodes = Sidebar.load_nodes()
-    state = %{state | sidebar_nodes: nodes}
-    {:noreply, start_schema_stream_tasks(state, profiles)}
+    nodes = reconcile_sidebar_profiles(state.sidebar_nodes, profiles)
+
+    first_id =
+      case List.first(nodes) do
+        nil -> nil
+        n -> n.id
+      end
+
+    sel_id =
+      if state.selected_tree_node_id &&
+           Enum.any?(
+             Sidebar.flatten_visible_nodes(nodes, state.selected_tree_node_id),
+             &(&1.id == state.selected_tree_node_id)
+           ) do
+        state.selected_tree_node_id
+      else
+        first_id
+      end
+
+    {:noreply, %{state | sidebar_nodes: nodes, selected_tree_node_id: sel_id}}
   end
 
   def handle_info({:connection_status, profile_id, status}, state) do
-    statuses = Map.put(state.connection_statuses, profile_id, status)
-    {:noreply, %{state | connection_statuses: statuses}, render?: false}
+    if status == :disconnected and idle_connection_node?(state.sidebar_nodes, profile_id) do
+      {:noreply, state, render?: false}
+    else
+      statuses = Map.put(state.connection_statuses, profile_id, status)
+      {:noreply, %{state | connection_statuses: statuses}, render?: false}
+    end
   end
 
   def handle_info(:throbber_tick, state) do
@@ -1228,8 +1388,11 @@ defmodule Strata.UI.App do
   def handle_info({:sql_query_finished, tab_id, elapsed, profile, ddl?, result}, state) do
     state = apply_sql_query_result(state, tab_id, elapsed, result)
 
+    needs_schema_load? =
+      ddl? or (profile != nil and idle_connection_node?(state.sidebar_nodes, profile.id))
+
     state =
-      if ddl? and match?({:ok, _}, result) and profile != nil do
+      if needs_schema_load? and match?({:ok, _}, result) and profile != nil do
         refresh_connection_schema_async(state, profile)
       else
         state
@@ -1256,11 +1419,22 @@ defmodule Strata.UI.App do
     _, _ -> []
   end
 
-  defp start_schema_stream_tasks(state, []), do: %{state | sidebar_nodes: Sidebar.load_nodes()}
+  defp start_schema_stream_tasks(state, []), do: state
 
   defp start_schema_stream_tasks(state, profiles) do
     caller = self()
-    default_expanded? = length(profiles) == 1
+    all_profiles = safe_list_profiles()
+    default_expanded? = length(all_profiles) <= 1
+
+    {updated_nodes, updated_statuses} =
+      Enum.reduce(profiles, {state.sidebar_nodes, state.connection_statuses}, fn profile,
+                                                                                 {nodes_acc,
+                                                                                  statuses_acc} ->
+        loading = Sidebar.loading_node(profile, expanded?: default_expanded?)
+
+        {upsert_connection_node(nodes_acc, profile.id, loading),
+         Map.put(statuses_acc, profile.id, :connecting)}
+      end)
 
     Enum.each(profiles, fn profile ->
       Task.start(fn ->
@@ -1269,7 +1443,26 @@ defmodule Strata.UI.App do
       end)
     end)
 
-    state
+    %{state | sidebar_nodes: updated_nodes, connection_statuses: updated_statuses}
+  end
+
+  defp reconcile_sidebar_profiles(_existing_nodes, []), do: Sidebar.load_nodes()
+
+  defp reconcile_sidebar_profiles(existing_nodes, profiles) do
+    existing_by_id =
+      existing_nodes
+      |> Enum.reject(&(&1.id == "no_conn_prompt"))
+      |> Map.new(&{&1.id, &1})
+
+    Enum.map(profiles, fn profile ->
+      case Map.get(existing_by_id, profile.id) do
+        nil ->
+          Sidebar.idle_node(profile)
+
+        existing ->
+          %{existing | label: Strata.SchemaInspector.connection_label(profile)}
+      end
+    end)
   end
 
   defp refresh_selected_connection_schema_async(state) do
@@ -1285,15 +1478,47 @@ defmodule Strata.UI.App do
   defp refresh_connection_schema_async(state, profile) do
     Strata.DataStore.invalidate_connection_cache(profile.id)
     caller = self()
-    profiles = safe_list_profiles()
-    default_expanded? = length(profiles) <= 1
+
+    updated_nodes =
+      if connection_node_placeholder?(state.sidebar_nodes, profile.id) or
+           not Enum.any?(state.sidebar_nodes, &(&1.id == profile.id)) do
+        upsert_connection_node(
+          state.sidebar_nodes,
+          profile.id,
+          Sidebar.loading_node(profile, expanded?: true)
+        )
+      else
+        state.sidebar_nodes
+      end
+
+    updated_statuses = Map.put(state.connection_statuses, profile.id, :connecting)
 
     Task.start(fn ->
-      node = Strata.SchemaInspector.fetch_tree_nodes(profile, expanded?: default_expanded?)
+      node = Strata.SchemaInspector.fetch_tree_nodes(profile, expanded?: true)
       send(caller, {:connection_schema_loaded, profile.id, node})
     end)
 
-    %{state | status_message: "⏳ Refreshing schema for '#{profile.name}'..."}
+    %{
+      state
+      | sidebar_nodes: updated_nodes,
+        connection_statuses: updated_statuses,
+        status_message: "⏳ Connecting & loading schema for '#{profile.name}'..."
+    }
+  end
+
+  defp offline_node_message(new_node) do
+    node_label = to_string(Map.get(new_node, :label, ""))
+
+    if String.contains?(node_label, "(Offline") do
+      node_label
+    else
+      new_node
+      |> Map.get(:children, [])
+      |> Enum.find_value(fn child ->
+        lbl = to_string(Map.get(child, :label, ""))
+        if String.contains?(lbl, "(Offline"), do: lbl, else: nil
+      end)
+    end
   end
 
   defp upsert_connection_node(nodes, profile_id, new_node) do
@@ -1541,6 +1766,29 @@ defmodule Strata.UI.App do
     :ok
   end
 
+  @non_text_key_codes MapSet.new([
+                        "caps_lock",
+                        "scroll_lock",
+                        "num_lock",
+                        "print_screen",
+                        "pause",
+                        "menu",
+                        "keypad_begin",
+                        "null",
+                        "insert",
+                        "unknown",
+                        "CapsLock",
+                        "ScrollLock",
+                        "NumLock",
+                        "PrintScreen",
+                        "Pause",
+                        "Menu",
+                        "KeypadBegin",
+                        "Null",
+                        "Insert",
+                        "Unknown"
+                      ])
+
   defp map_ex_ratatui_key(code, modifiers) do
     modifiers = modifiers || []
     ctrl? = "control" in modifiers or "Ctrl" in modifiers or "ctrl" in modifiers
@@ -1597,7 +1845,7 @@ defmodule Strata.UI.App do
       code in ["esc", "escape", "Esc", "Escape"] ->
         :esc
 
-      code in ["backspace", "Backspace"] ->
+      code in ["backspace", "Backspace", "\x7f", "\b"] ->
         :backspace
 
       code in ["delete", "Delete"] ->
@@ -1633,7 +1881,8 @@ defmodule Strata.UI.App do
       code in ["f6", "F6"] ->
         :f6
 
-      is_binary(code) and String.length(code) == 1 ->
+      is_binary(code) and code != "" and not MapSet.member?(@non_text_key_codes, code) and
+          (String.length(code) == 1 or (not ctrl? and not super? and String.printable?(code))) ->
         code
 
       true ->
@@ -2483,14 +2732,24 @@ defmodule Strata.UI.App do
   end
 
   @doc """
-  Opens a new blank SQL tab immediately if `closed_tabs` is empty, or pushes
-  `SQLTabPickerModal` so the user can choose between a new blank tab or reopening a closed tab.
+  Opens a new blank SQL tab immediately if `closed_tabs` for the current database is empty,
+  or pushes `SQLTabPickerModal` scoped to the current database so the user can choose between
+  a new blank tab or reopening a recently closed query tab from that database.
   """
   @spec request_new_sql_tab(t()) :: t()
-  def request_new_sql_tab(%__MODULE__{closed_tabs: []} = app), do: open_tab(app)
+  def request_new_sql_tab(%__MODULE__{} = app) do
+    target_profile_id = current_profile_id(app)
 
-  def request_new_sql_tab(%__MODULE__{closed_tabs: closed} = app) when is_list(closed) do
-    push_modal(app, SQLTabPickerModal.new(closed))
+    scoped_closed =
+      Enum.filter(app.closed_tabs || [], fn tab ->
+        Map.get(tab, :profile_id) == target_profile_id
+      end)
+
+    if scoped_closed == [] do
+      open_tab(app)
+    else
+      push_modal(app, SQLTabPickerModal.new(scoped_closed))
+    end
   end
 
   @doc """
@@ -3974,6 +4233,9 @@ defmodule Strata.UI.App do
       :sidebar_refresh ->
         refresh_sidebar_selection(app)
 
+      :sidebar_disconnect ->
+        disconnect_selected_connection(app)
+
       :sidebar_filter ->
         Sidebar.handle_key(%{app | focus: :sidebar}, "/")
 
@@ -4102,7 +4364,13 @@ defmodule Strata.UI.App do
         end
 
       app.active_view == :query_view and inside_area?(x, y, layout.editor) ->
-        :text
+        %{run_rect: run_rect, ai_rect: ai_rect} =
+          Renderer.editor_bottom_buttons(app, layout.editor)
+
+        if (run_rect != nil and inside_area?(x, y, run_rect)) or
+             (ai_rect != nil and inside_area?(x, y, ai_rect)),
+           do: :pointer,
+           else: :text
 
       areas.filter_area != nil and inside_area?(x, y, areas.filter_area) ->
         rects = Renderer.filter_bar_rects(areas.filter_area, app)
@@ -4241,12 +4509,11 @@ defmodule Strata.UI.App do
     tab_id = next_tab_id(app.tabs)
     name = Keyword.get(tab_opts, :name) || next_query_name(app.tabs)
     content = Keyword.get(tab_opts, :content, "")
-    profile = Sidebar.resolve_profile_for_selection(app)
 
     new_tab =
       build_query_tab(tab_id, name,
         content: content,
-        profile_id: Keyword.get(tab_opts, :profile_id, profile && profile.id),
+        profile_id: Keyword.get(tab_opts, :profile_id, current_profile_id(app)),
         cursor: Keyword.get(tab_opts, :cursor, {0, 0}),
         ai_session_id: Keyword.get(tab_opts, :ai_session_id),
         ai_applied_msg_id: Keyword.get(tab_opts, :ai_applied_msg_id),
@@ -4295,8 +4562,17 @@ defmodule Strata.UI.App do
     closed_idx = Enum.find_index(app.tabs, &(&1.id == tab_id))
     remaining = Enum.reject(app.tabs, &(&1.id == tab_id))
 
+    closing_tab_for_archive =
+      if closing_tab && is_nil(Map.get(closing_tab, :profile_id)) do
+        Map.put(closing_tab, :profile_id, current_profile_id(app))
+      else
+        closing_tab
+      end
+
     closed_entry =
-      if closing_tab, do: Strata.WorkspaceStore.build_closed_tab_entry(closing_tab), else: nil
+      if closing_tab_for_archive,
+        do: Strata.WorkspaceStore.build_closed_tab_entry(closing_tab_for_archive),
+        else: nil
 
     updated_closed =
       Strata.WorkspaceStore.prepend_closed_tab(app.closed_tabs || [], closed_entry)
@@ -4583,7 +4859,11 @@ defmodule Strata.UI.App do
 
         app =
           update_tab_by_id(app, tab_id, fn t ->
-            Map.merge(t, %{executed_sql: sql, query_request_id: req_id})
+            Map.merge(t, %{
+              profile_id: Map.get(t, :profile_id) || profile.id,
+              executed_sql: sql,
+              query_request_id: req_id
+            })
           end)
 
         Task.start(fn ->
@@ -4620,7 +4900,11 @@ defmodule Strata.UI.App do
 
         app =
           update_tab_by_id(app, tab.id, fn t ->
-            Map.merge(t, %{executed_sql: sql, query_request_id: req_id})
+            Map.merge(t, %{
+              profile_id: Map.get(t, :profile_id) || profile.id,
+              executed_sql: sql,
+              query_request_id: req_id
+            })
           end)
 
         start_time = System.monotonic_time(:millisecond)
@@ -4901,6 +5185,19 @@ defmodule Strata.UI.App do
     resolve_profile_by_id(Map.get(tab, :profile_id)) || Sidebar.resolve_profile_for_selection(app)
   end
 
+  defp current_profile_id(app) do
+    case Sidebar.resolve_profile_for_selection(app) do
+      %{id: id} ->
+        id
+
+      nil ->
+        case active_tab(app) do
+          %{} = tab -> Map.get(tab, :profile_id)
+          nil -> nil
+        end
+    end
+  end
+
   @doc """
   Pushes a modal overlay map to the top of the modals stack.
   """
@@ -5118,6 +5415,11 @@ defmodule Strata.UI.App do
             case ConnectionModal.handle_key(top, key) do
               {:save, modal} ->
                 profile = ConnectionModal.to_profile(modal)
+                is_new? = is_nil(modal.id)
+
+                was_connected? =
+                  match?({:ok, _}, Strata.ConnectionSupervisor.lookup_worker(profile.id))
+
                 _ = Strata.ConnectionSupervisor.stop_worker(profile.id)
                 _ = Strata.DataStore.invalidate_connection_cache(profile.id)
 
@@ -5128,10 +5430,21 @@ defmodule Strata.UI.App do
                 end
 
                 {_popped, app} = pop_modal(app)
-                updated_nodes = Sidebar.load_nodes()
 
-                %{app | sidebar_nodes: updated_nodes, selected_tree_node_id: profile.id}
-                |> refresh_connection_schema_async(profile)
+                updated_nodes =
+                  reconcile_sidebar_profiles(app.sidebar_nodes, safe_list_profiles())
+
+                app = %{
+                  app
+                  | sidebar_nodes: updated_nodes,
+                    selected_tree_node_id: profile.id
+                }
+
+                if is_new? or was_connected? or Map.get(profile, :auto_connect, false) == true do
+                  refresh_connection_schema_async(app, profile)
+                else
+                  %{app | status_message: "Saved connection '#{profile.name}'"}
+                end
 
               {:cancel, _modal} ->
                 {_popped, app} = pop_modal(app)
@@ -5495,8 +5808,10 @@ defmodule Strata.UI.App do
   defp insert_ai_input_text(app, text) when is_binary(text) do
     val = app.ai_input_text || ""
     pos = clamp_ai_cursor(app.ai_input_cursor, val)
-    new_val = String.slice(val, 0, pos) <> text <> String.slice(val, pos..-1//1)
-    %{app | ai_input_text: new_val, ai_input_cursor: pos + String.length(text)}
+    prefix = String.normalize(String.slice(val, 0, pos) <> text, :nfc)
+    suffix = String.slice(val, pos..-1//1)
+    new_val = String.normalize(prefix <> suffix, :nfc)
+    %{app | ai_input_text: new_val, ai_input_cursor: String.length(prefix)}
   end
 
   defp clamp_ai_cursor(pos, str) do
@@ -5883,10 +6198,15 @@ defmodule Strata.UI.App do
             }
 
             app =
-              if target_item.type in [:table, :view] do
-                Sidebar.load_table_data(app, target_item.label)
-              else
-                Sidebar.handle_key(app, :enter)
+              cond do
+                target_item.type in [:table, :view] ->
+                  Sidebar.load_table_data(app, target_item.label)
+
+                unconnected_sidebar_item?(app, target_item) ->
+                  refresh_selected_connection_schema_async(app)
+
+                true ->
+                  Sidebar.handle_key(app, :enter)
               end
 
             updated_visible =
@@ -5915,21 +6235,34 @@ defmodule Strata.UI.App do
         handle_tab_bar_click(app, x, y, layout.tabs)
 
       layout.editor.height > 0 and inside_area?(x, y, layout.editor) ->
-        app =
-          app
-          |> cancel_inline_edit_if_active()
-          |> set_focus(:editor)
+        comp_rect = Renderer.editor_completion_rect(app, layout.editor)
 
-        case Renderer.editor_completion_rect(app, layout.editor) do
-          %{} = comp_rect ->
-            if inside_area?(x, y, comp_rect) do
-              apply_clicked_completion(app, y, comp_rect)
-            else
-              place_editor_cursor_at_click(app, x, y, layout.editor)
-            end
+        %{run_rect: run_rect, ai_rect: ai_rect} =
+          Renderer.editor_bottom_buttons(app, layout.editor)
 
-          nil ->
-            place_editor_cursor_at_click(app, x, y, layout.editor)
+        cond do
+          comp_rect != nil and inside_area?(x, y, comp_rect) ->
+            app
+            |> cancel_inline_edit_if_active()
+            |> set_focus(:editor)
+            |> apply_clicked_completion(y, comp_rect)
+
+          run_rect != nil and inside_area?(x, y, run_rect) ->
+            app
+            |> cancel_inline_edit_if_active()
+            |> set_focus(:editor)
+            |> execute_sql_query_async()
+
+          ai_rect != nil and inside_area?(x, y, ai_rect) ->
+            app
+            |> cancel_inline_edit_if_active()
+            |> open_ai_sql_prompt()
+
+          true ->
+            app
+            |> cancel_inline_edit_if_active()
+            |> set_focus(:editor)
+            |> place_editor_cursor_at_click(x, y, layout.editor)
         end
 
       layout.datagrid.height > 0 and inside_area?(x, y, layout.datagrid) ->
@@ -6447,9 +6780,6 @@ defmodule Strata.UI.App do
     cond do
       tb.new_sql_rect != nil and inside_area?(x, tabs_area.y, tb.new_sql_rect) ->
         request_new_sql_tab(app)
-
-      tb[:ai_sql_rect] != nil and inside_area?(x, tabs_area.y, tb.ai_sql_rect) ->
-        open_ai_sql_prompt(app)
 
       true ->
         case Enum.find(tb.tabs, &inside_area?(x, tabs_area.y, &1.rect)) do

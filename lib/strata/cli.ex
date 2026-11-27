@@ -207,7 +207,16 @@ defmodule Strata.CLI do
   """
   @spec tui_start_opts() :: keyword()
   def tui_start_opts do
-    [name: Strata.UI.App, terminal: true, mouse_capture: true, keyboard_enhancement: true]
+    # Leave Kitty keyboard_enhancement disabled by default so macOS IMEs (Vietnamese Telex/VNI,
+    # CJK) can compose characters normally instead of being intercepted by REPORT_ALL_KEYS_AS_ESCAPE_CODES.
+    keyboard_enhancement? = System.get_env("STRATA_KEYBOARD_ENHANCEMENT") == "true"
+
+    [
+      name: Strata.UI.App,
+      terminal: true,
+      mouse_capture: true,
+      keyboard_enhancement: keyboard_enhancement?
+    ]
   end
 
   defp ensure_native_loaded! do

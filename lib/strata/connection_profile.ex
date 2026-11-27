@@ -10,6 +10,7 @@ defmodule Strata.ConnectionProfile do
           password: String.t() | nil,
           ssh_profile_id: String.t() | nil,
           ssh: map() | nil,
+          auto_connect: boolean(),
           options: map()
         }
 
@@ -24,6 +25,7 @@ defmodule Strata.ConnectionProfile do
     :password,
     :ssh_profile_id,
     :ssh,
+    auto_connect: false,
     options: %{}
   ]
 end

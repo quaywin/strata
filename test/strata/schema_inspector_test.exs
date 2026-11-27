@@ -109,18 +109,49 @@ defmodule Strata.SchemaInspectorTest do
     refute SchemaInspector.system_schema?("analytics")
   end
 
-  test "connection_label includes both profile name and database name without duplicating identical names" do
-    pg = %ConnectionProfile{id: "c1", name: "Prod", driver: :postgres, database: "ecommerce_prod"}
-    assert SchemaInspector.connection_label(pg) == "Prod · ecommerce_prod (PG)"
-
-    same = %ConnectionProfile{
-      id: "c2",
-      name: "ecommerce_prod",
+  test "connection_label formats leading driver icon, name - host or ssh host, and trailing ssh icon" do
+    pg = %ConnectionProfile{
+      id: "c1",
+      name: "Prod",
       driver: :postgres,
+      host: "10.0.1.50",
       database: "ecommerce_prod"
     }
 
-    assert SchemaInspector.connection_label(same) == "ecommerce_prod (PG)"
+    assert SchemaInspector.connection_label(pg) == "🐘 Prod - 10.0.1.50"
+
+    my_ssh = %ConnectionProfile{
+      id: "c2",
+      name: "Staging",
+      driver: :mysql,
+      host: "127.0.0.1",
+      ssh: %{host: "bastion.staging.internal", port: 22}
+    }
+
+    assert SchemaInspector.connection_label(my_ssh) ==
+             "🐬 Staging - bastion.staging.internal 🔑"
+
+    ssh_id = "ssh_test_#{System.unique_integer([:positive])}"
+
+    :ok =
+      Strata.SSHProfileStore.put_profile(%Strata.SSHProfile{
+        id: ssh_id,
+        name: "Jump",
+        host: "jump.prod.example.com",
+        port: 22,
+        username: "ops"
+      })
+
+    pg_ssh_prof = %ConnectionProfile{
+      id: "c2b",
+      name: "Analytics",
+      driver: :postgres,
+      host: "127.0.0.1",
+      ssh_profile_id: ssh_id
+    }
+
+    assert SchemaInspector.connection_label(pg_ssh_prof) ==
+             "🐘 Analytics - jump.prod.example.com 🔑"
 
     sq = %ConnectionProfile{
       id: "c3",
@@ -129,7 +160,16 @@ defmodule Strata.SchemaInspectorTest do
       database: "/tmp/orders.sqlite"
     }
 
-    assert SchemaInspector.connection_label(sq) == "Local · orders.sqlite (SQLite)"
+    assert SchemaInspector.connection_label(sq) == "🪶 Local - orders.sqlite"
+
+    sq_same = %ConnectionProfile{
+      id: "c4",
+      name: "orders.sqlite",
+      driver: :sqlite,
+      database: "/tmp/orders.sqlite"
+    }
+
+    assert SchemaInspector.connection_label(sq_same) == "🪶 orders.sqlite"
   end
 
   test "fetch_fallback_nodes formats exception structs cleanly instead of raw inspect" do

@@ -144,6 +144,14 @@ defmodule Strata.ConfigStoreTest do
     roundtrip = manual_prof |> ConfigStore.profile_to_map() |> ConfigStore.profile_from_map()
     assert roundtrip.ssh == manual_prof.ssh
     assert roundtrip.ssh_profile_id == nil
+    assert roundtrip.auto_connect == false
+
+    auto_roundtrip =
+      %{manual_prof | auto_connect: true}
+      |> ConfigStore.profile_to_map()
+      |> ConfigStore.profile_from_map()
+
+    assert auto_roundtrip.auto_connect == true
 
     GenServer.stop(cfg_pid2)
     GenServer.stop(ssh_pid2)

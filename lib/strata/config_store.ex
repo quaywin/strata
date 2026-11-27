@@ -155,7 +155,7 @@ defmodule Strata.ConfigStore do
         {:ok, file_tab} ->
           :ets.foldl(
             fn element, _acc ->
-              :ets.insert(tab, element)
+              :ets.insert(tab, normalize_loaded_element(element))
             end,
             :ok,
             file_tab
@@ -285,6 +285,7 @@ defmodule Strata.ConfigStore do
       "password" => p.password,
       "ssh_profile_id" => p.ssh_profile_id,
       "ssh" => ssh_to_map(p.ssh),
+      "auto_connect" => Map.get(p, :auto_connect, false) == true,
       "options" => stringify_keys(p.options || %{})
     }
   end
@@ -310,9 +311,16 @@ defmodule Strata.ConfigStore do
       password: Map.get(map, "password", ""),
       ssh_profile_id: Map.get(map, "ssh_profile_id"),
       ssh: ssh_from_map(Map.get(map, "ssh")),
+      auto_connect: Map.get(map, "auto_connect", false) == true,
       options: symbolize_keys(Map.get(map, "options", %{}))
     }
   end
+
+  defp normalize_loaded_element({{:profile, id}, %ConnectionProfile{} = profile}) do
+    {{:profile, id}, struct(ConnectionProfile, Map.from_struct(profile))}
+  end
+
+  defp normalize_loaded_element(element), do: element
 
   defp ssh_to_map(nil), do: nil
 

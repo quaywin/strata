@@ -132,7 +132,8 @@ defmodule Strata.UI.Components.SQLEditorTest do
 
       titles = SQLEditor.tab_titles(app)
       assert length(titles) == 2
-      assert Enum.at(titles, 1) =~ "★ 2: Query 2"
+      assert Enum.at(titles, 1) == "2: Query 2"
+      refute String.contains?(Enum.at(titles, 1), "★")
 
       assert SQLEditor.active_tab_index(app) == 1
     end

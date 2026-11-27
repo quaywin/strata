@@ -88,6 +88,32 @@ defmodule Strata.WorkspaceStoreTest do
                  ai_messages: []
                })
 
+      # Deduplication preserves identical queries across different profile_ids
+      entry_db_a =
+        WorkspaceStore.build_closed_tab_entry(%{
+          kind: :query,
+          name: "Query 1",
+          profile_id: "conn_a",
+          content: "SELECT 1;",
+          ai_messages: []
+        })
+
+      entry_db_b =
+        WorkspaceStore.build_closed_tab_entry(%{
+          kind: :query,
+          name: "Query 1",
+          profile_id: "conn_b",
+          content: "SELECT 1;",
+          ai_messages: []
+        })
+
+      combined =
+        []
+        |> WorkspaceStore.prepend_closed_tab(entry_db_a)
+        |> WorkspaceStore.prepend_closed_tab(entry_db_b)
+
+      assert length(combined) == 2
+
       assert :ok == WorkspaceStore.save_sync(pid1, [], nil, [closed_entry])
       GenServer.stop(pid1)
 

@@ -161,7 +161,8 @@ defmodule Strata.WorkspaceStore do
   def prepend_closed_tab(closed_tabs, entry) when is_list(closed_tabs) and is_map(entry) do
     filtered =
       Enum.reject(closed_tabs, fn existing ->
-        Map.get(existing, :content) == entry.content and
+        Map.get(existing, :profile_id) == Map.get(entry, :profile_id) and
+          Map.get(existing, :content) == entry.content and
           Map.get(existing, :ai_messages, []) == entry.ai_messages and
           Map.get(existing, :name) == entry.name
       end)

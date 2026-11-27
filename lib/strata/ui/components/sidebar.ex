@@ -37,25 +37,51 @@ defmodule Strata.UI.Components.Sidebar do
       if Keyword.get(opts, :live, false) do
         fetch_all_tree_nodes(profiles)
       else
-        Enum.map(profiles, fn profile ->
-          %{
-            id: profile.id,
-            label: Strata.SchemaInspector.connection_label(profile),
-            type: :connection,
-            expanded?: false,
-            children: [
-              %{
-                id: "#{profile.id}_loading",
-                label: "Loading schema...",
-                type: :schema,
-                expanded?: false,
-                children: []
-              }
-            ]
-          }
-        end)
+        Enum.map(profiles, &idle_node/1)
       end
     end
+  end
+
+  @doc """
+  Builds an unconnected/idle sidebar node for `profile` without opening any DB or SSH connection.
+  """
+  def idle_node(profile) do
+    %{
+      id: profile.id,
+      label: Strata.SchemaInspector.connection_label(profile),
+      type: :connection,
+      expanded?: false,
+      children: [
+        %{
+          id: "#{profile.id}_idle",
+          label: "Not connected (Enter to connect)",
+          type: :schema,
+          expanded?: false,
+          children: []
+        }
+      ]
+    }
+  end
+
+  @doc """
+  Builds a loading placeholder sidebar node while connecting and inspecting schema for `profile`.
+  """
+  def loading_node(profile, opts \\ []) do
+    %{
+      id: profile.id,
+      label: Strata.SchemaInspector.connection_label(profile),
+      type: :connection,
+      expanded?: Keyword.get(opts, :expanded?, false),
+      children: [
+        %{
+          id: "#{profile.id}_loading",
+          label: "Loading schema...",
+          type: :schema,
+          expanded?: false,
+          children: []
+        }
+      ]
+    }
   end
 
   @doc """
@@ -251,6 +277,9 @@ defmodule Strata.UI.Components.Sidebar do
       k when k in ["r", "R", :f5] ->
         Strata.UI.App.refresh_sidebar_selection(app)
 
+      k when k in ["u", "U"] ->
+        Strata.UI.App.disconnect_selected_connection(app)
+
       k when k in ["c", "C"] ->
         collapse_all_nodes(app)
 
@@ -373,17 +402,22 @@ defmodule Strata.UI.Components.Sidebar do
   Resolves matching `ConnectionProfile` for the selected tree node.
   """
   def resolve_profile_for_selection(app) do
-    profiles =
-      try do
-        Strata.ConfigStore.list_profiles()
-      catch
-        _, _ -> []
-      end
-
     sel_id = app.selected_tree_node_id
 
-    Enum.find(profiles, fn p -> sel_id && String.starts_with?(sel_id, p.id) end) ||
-      List.first(profiles)
+    if sel_id in ["no_conn_prompt", "add_conn_hint"] do
+      nil
+    else
+      profiles =
+        try do
+          Strata.ConfigStore.list_profiles()
+        catch
+          _, _ -> []
+        end
+
+      Enum.find(profiles, &(&1.id == sel_id)) ||
+        Enum.find(profiles, fn p -> sel_id && String.starts_with?(sel_id, p.id) end) ||
+        List.first(profiles)
+    end
   end
 
   @doc """
@@ -578,7 +612,7 @@ defmodule Strata.UI.Components.Sidebar do
     is_hint? =
       is_binary(item.id) and
         (String.ends_with?(item.id, "_loading") or String.ends_with?(item.id, "_status") or
-           item.id == "add_conn_hint")
+           String.ends_with?(item.id, "_idle") or item.id == "add_conn_hint")
 
     count_suffix =
       if item.type == :schema and not is_hint? and (item[:child_count] || 0) > 0,
@@ -597,7 +631,7 @@ defmodule Strata.UI.Components.Sidebar do
               :connected -> {"●", :green}
               :connecting -> {"◐", :yellow}
               :disconnected -> {"○", :red}
-              _ -> {"●", :cyan}
+              _ -> {"○", :dark_gray}
             end
 
           {dot, %Style{fg: dot_fg, modifiers: [:bold]}, %Style{fg: :white, modifiers: [:bold]}}
@@ -605,7 +639,8 @@ defmodule Strata.UI.Components.Sidebar do
         :schema ->
           if is_hint? do
             h_fg = if String.contains?(item.label, "Offline"), do: :red, else: :dark_gray
-            {"!", %Style{fg: h_fg}, %Style{fg: h_fg}}
+            glyph = if String.ends_with?(to_string(item.id), "_idle"), do: "·", else: "!"
+            {glyph, %Style{fg: h_fg}, %Style{fg: h_fg}}
           else
             arrow = if item.expanded?, do: "▾", else: "▸"
             {arrow, %Style{fg: :cyan}, %Style{fg: :cyan, modifiers: [:bold]}}

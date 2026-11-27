@@ -235,5 +235,29 @@ defmodule Strata.UI.Components.SidebarTest do
       assert vp.max_offset == vp.total - 3
       assert length(vp.styled_items) == 3
     end
+
+    test "idle_node renders unconnected icon and hint instead of Loading schema" do
+      profile = %Strata.ConnectionProfile{
+        id: "idle_pg",
+        name: "Prod PG",
+        driver: :postgres,
+        database: "app"
+      }
+
+      idle = Sidebar.idle_node(profile)
+      assert idle.expanded? == false
+      assert [%{id: "idle_pg_idle", label: "Not connected (Enter to connect)"}] = idle.children
+
+      idle_app =
+        App.new(sidebar_nodes: [%{idle | expanded?: true}], selected_tree_node_id: "idle_pg")
+
+      vp = Sidebar.render_viewport(idle_app, %{x: 0, y: 0, width: 45, height: 10})
+
+      texts =
+        Enum.map(vp.styled_items, fn line -> Enum.map_join(line.spans, "", & &1.content) end)
+
+      assert Enum.any?(texts, &String.contains?(&1, "○ 🐘 Prod PG"))
+      assert Enum.any?(texts, &String.contains?(&1, "· Not connected (Enter to connect)"))
+    end
   end
 end

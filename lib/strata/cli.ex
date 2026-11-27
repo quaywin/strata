@@ -3,6 +3,8 @@ defmodule Strata.CLI do
   CLI entrypoint for handling flags and launching the interactive Strata TUI.
   """
 
+  alias Strata.Updater
+
   @doc """
   Returns the current Strata application version string.
   """
@@ -18,15 +20,38 @@ defmodule Strata.CLI do
   Parses CLI arguments into an action tuple.
   """
   @spec parse_args([String.t()]) ::
-          :continue | :version | :help | {:error, [String.t()]}
+          :continue | :version | :help | {:update, keyword()} | {:error, [String.t()]}
   def parse_args(args) do
     cond do
-      args == [] -> :continue
-      args in [["--version"], ["-v"]] -> :version
-      args in [["--help"], ["-h"]] -> :help
-      true -> {:error, args}
+      args == [] ->
+        :continue
+
+      args in [["--version"], ["-v"]] ->
+        :version
+
+      args in [["--help"], ["-h"]] ->
+        :help
+
+      args in [["update"], ["--update"]] ->
+        {:update, [check_only: false]}
+
+      args in [["update", "--check"], ["--check-update"], ["--update", "--check"]] ->
+        {:update, [check_only: true]}
+
+      true ->
+        parse_update_with_version(args)
     end
   end
+
+  defp parse_update_with_version(["update", "--version", ver]) when ver != "" do
+    {:update, [check_only: false, version: ver]}
+  end
+
+  defp parse_update_with_version(["--update", "--version", ver]) when ver != "" do
+    {:update, [check_only: false, version: ver]}
+  end
+
+  defp parse_update_with_version(args), do: {:error, args}
 
   @doc """
   Handles CLI arguments for standalone Burrito execution.
@@ -46,6 +71,12 @@ defmodule Strata.CLI do
       :help ->
         print_help()
         System.halt(0)
+
+      {:update, opts} ->
+        case run_update(opts) do
+          :ok -> System.halt(0)
+          {:error, _reason} -> System.halt(1)
+        end
 
       {:error, bad_args} ->
         IO.puts(:stderr, "Unrecognized arguments: #{Enum.join(bad_args, " ")}")
@@ -67,6 +98,9 @@ defmodule Strata.CLI do
         print_help()
         :ok
 
+      {:update, opts} ->
+        run_update(opts)
+
       :continue ->
         launch_tui()
 
@@ -74,6 +108,67 @@ defmodule Strata.CLI do
         IO.puts(:stderr, "Unrecognized arguments: #{Enum.join(bad_args, " ")}")
         print_help()
         {:error, {:invalid_args, bad_args}}
+    end
+  end
+
+  @doc """
+  Executes CLI update check / self-update workflow and prints progress to stdout/stderr.
+  """
+  @spec run_update(keyword()) :: :ok | {:error, String.t()}
+  def run_update(opts \\ []) do
+    check_only? = Keyword.get(opts, :check_only, false)
+    updater_opts = Keyword.drop(opts, [:check_only])
+    io = Keyword.get(opts, :io, :stdio)
+
+    IO.puts(io, "Current version: v#{version()}")
+    IO.puts(io, "Checking for updates from #{Updater.repo(updater_opts)}...")
+
+    case Updater.check_for_update(updater_opts) do
+      {:ok, %{status: :up_to_date} = info} ->
+        IO.puts(io, "Strata is already up to date (v#{info.latest_version}).")
+        :ok
+
+      {:ok, %{status: :ahead} = info} ->
+        IO.puts(
+          io,
+          "Current version (v#{info.current_version}) is ahead of latest release (v#{info.latest_version})."
+        )
+
+        :ok
+
+      {:ok, %{status: :update_available} = info} when check_only? ->
+        IO.puts(
+          io,
+          "Update available: v#{info.current_version} -> v#{info.latest_version} (#{info.tag_name})"
+        )
+
+        if info.release_url != "" do
+          IO.puts(io, "Release notes: #{info.release_url}")
+        end
+
+        IO.puts(io, "Run `strata update` to install the latest release.")
+        :ok
+
+      {:ok, %{status: :update_available} = info} ->
+        IO.puts(io, "Downloading Strata #{info.tag_name} (#{info.asset_name || info.target})...")
+
+        case Updater.apply_update(info, updater_opts) do
+          {:ok, result} ->
+            IO.puts(
+              io,
+              "Successfully updated Strata to v#{result.version} at #{result.binary_path}!"
+            )
+
+            :ok
+
+          {:error, reason} ->
+            IO.puts(:stderr, "Update failed: #{reason}")
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Update check failed: #{reason}")
+        {:error, reason}
     end
   end
 
@@ -93,10 +188,17 @@ defmodule Strata.CLI do
 
     Usage:
       strata [options]
+      strata update [options]
 
     Options:
-      -h, --help      Show this help message
-      -v, --version   Show version information
+      -h, --help            Show this help message
+      -v, --version         Show version information
+      --update              Check for and install the latest release
+      --check-update        Check if a newer version is available
+
+    Update Options:
+      --check               Only check for updates without installing
+      --version <tag>       Update to a specific release tag (e.g. v0.1.10)
     """)
   end
 

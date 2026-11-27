@@ -17,6 +17,7 @@ defmodule Strata.UI.App do
   alias Strata.UI.Components.SQLEditor
   alias Strata.UI.Components.SQLTabPickerModal
   alias Strata.UI.Components.SSHModal
+  alias Strata.UI.Components.UpdateModal
   alias Strata.UI.Renderer
 
   @type focus_pane :: :sidebar | :editor | :datagrid | :ai_panel
@@ -83,7 +84,8 @@ defmodule Strata.UI.App do
           drag_anchor: {integer(), integer()} | nil,
           text_selection: {{integer(), integer()}, {integer(), integer()}} | nil,
           selection_screen: map() | nil,
-          selection_bounds: map() | nil
+          selection_bounds: map() | nil,
+          update_info: map() | nil
         }
 
   defstruct focus: :sidebar,
@@ -143,8 +145,10 @@ defmodule Strata.UI.App do
             drag_anchor: nil,
             text_selection: nil,
             selection_screen: nil,
-            selection_bounds: nil
+            selection_bounds: nil,
+            update_info: nil
 
+  @env Application.compile_env(:strata, :env, :prod)
   @panes [:sidebar, :editor, :datagrid]
 
   # --- ExRatatui.App Callbacks ---
@@ -265,7 +269,8 @@ defmodule Strata.UI.App do
           | drag_anchor: {col, row},
             text_selection: nil,
             selection_screen: nil,
-            selection_bounds: nil
+            selection_bounds: nil,
+            update_info: nil
         }
 
         {:noreply, new_state,
@@ -674,6 +679,7 @@ defmodule Strata.UI.App do
   def handle_info(:bootstrap, state) do
     {state, restored?} = restore_workspace_tabs(state)
     profiles = safe_list_profiles()
+    maybe_start_background_update_check(state)
 
     if restored? do
       {:noreply, start_schema_stream_tasks(state, profiles)}
@@ -1071,6 +1077,74 @@ defmodule Strata.UI.App do
             end
 
           %{state | modals: [updated_am | rest]}
+
+        _ ->
+          state
+      end
+
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {:startup_update_check_finished, {:ok, %{status: :update_available} = info}},
+        state
+      ) do
+    status_msg =
+      if state.status_message in [nil, "", "Ready"] do
+        "🆕 Strata v#{info.latest_version} available — press [?] → Check for Updates"
+      else
+        state.status_message
+      end
+
+    {:noreply, %{state | update_info: info, status_message: status_msg}}
+  end
+
+  def handle_info({:startup_update_check_finished, {:ok, info}}, state) do
+    {:noreply, %{state | update_info: info}, render?: false}
+  end
+
+  def handle_info({:startup_update_check_finished, _res}, state) do
+    {:noreply, state, render?: false}
+  end
+
+  def handle_info({:update_check_finished, res}, state) do
+    state =
+      case res do
+        {:ok, info} -> %{state | update_info: info}
+        _ -> state
+      end
+
+    state =
+      case state.modals do
+        [%UpdateModal{} = um | rest] ->
+          updated_um = UpdateModal.apply_check_result(um, res)
+          %{state | modals: [updated_um | rest]}
+
+        _ ->
+          state
+      end
+
+    {:noreply, state}
+  end
+
+  def handle_info({:update_install_finished, res}, state) do
+    state =
+      case state.modals do
+        [%UpdateModal{} = um | rest] ->
+          updated_um = UpdateModal.apply_install_result(um, res)
+          next_state = %{state | modals: [updated_um | rest]}
+
+          case res do
+            {:ok, result} ->
+              %{
+                next_state
+                | update_info: nil,
+                  status_message: "✅ Updated to v#{result.version} — quit [q] and restart strata"
+              }
+
+            _ ->
+              next_state
+          end
 
         _ ->
           state
@@ -1843,6 +1917,95 @@ defmodule Strata.UI.App do
   end
 
   defp test_ai_cli_async(state), do: state
+
+  defp maybe_start_background_update_check(state) do
+    if @env != :test and Map.get(state, :terminal, false) and
+         System.get_env("STRATA_CHECK_UPDATES") != "false" do
+      caller = self()
+
+      Task.start(fn ->
+        res = Strata.Updater.check_for_update()
+        send(caller, {:startup_update_check_finished, res})
+      end)
+    end
+  end
+
+  @doc """
+  Opens the App Update modal and automatically triggers a check if no cached check exists.
+  """
+  @spec open_update_modal(t()) :: t()
+  def open_update_modal(%__MODULE__{} = app) do
+    modal = UpdateModal.new(update_info: app.update_info)
+    app_with_modal = push_modal(app, modal)
+
+    if app.update_info == nil do
+      check_updates_async(app_with_modal)
+    else
+      app_with_modal
+    end
+  end
+
+  @doc """
+  Starts an asynchronous update check when `%UpdateModal{}` is the active top modal.
+  """
+  @spec check_updates_async(t(), keyword()) :: t()
+  def check_updates_async(state, opts \\ [])
+
+  def check_updates_async(%__MODULE__{modals: [%UpdateModal{} = um | rest]} = state, opts) do
+    caller = self()
+
+    Task.start(fn ->
+      res = Strata.Updater.check_for_update(opts)
+      send(caller, {:update_check_finished, res})
+    end)
+
+    updated_um = %{
+      um
+      | status: :checking,
+        status_message: "⏳ Checking GitHub Releases for updates..."
+    }
+
+    %{state | modals: [updated_um | rest]}
+  end
+
+  def check_updates_async(state, _opts), do: state
+
+  @doc """
+  Starts an asynchronous self-update download and binary replacement when `%UpdateModal{}` is active.
+  """
+  @spec install_update_async(t(), keyword()) :: t()
+  def install_update_async(state, opts \\ [])
+
+  def install_update_async(%__MODULE__{modals: [%UpdateModal{} = um | rest]} = state, opts) do
+    case um.update_info do
+      %{status: :update_available} = info ->
+        caller = self()
+
+        Task.start(fn ->
+          res = Strata.Updater.apply_update(info, opts)
+          send(caller, {:update_install_finished, res})
+        end)
+
+        updated_um = %{
+          um
+          | status: :updating,
+            status_message: "⏳ Downloading and installing v#{info.latest_version}..."
+        }
+
+        %{state | modals: [updated_um | rest]}
+
+      _ ->
+        updated_um = %{
+          um
+          | status: :error,
+            status_message: "❌ No available update to install. Check for updates first."
+        }
+
+        %{state | modals: [updated_um | rest]}
+    end
+  end
+
+  def install_update_async(state, _opts), do: state
 
   @doc """
   Opens the AI Assistant Settings modal.
@@ -3798,6 +3961,9 @@ defmodule Strata.UI.App do
       :ai_settings ->
         open_ai_settings_modal(app)
 
+      :check_updates ->
+        open_update_modal(app)
+
       :ai_sql_assistant ->
         open_ai_sql_prompt(app)
 
@@ -4652,6 +4818,22 @@ defmodule Strata.UI.App do
                 app
 
               %AISettingsModal{} = updated_modal ->
+                %{app | modals: [updated_modal | rest]}
+            end
+
+          match?(%UpdateModal{}, top) ->
+            case UpdateModal.handle_key(top, key) do
+              {:check, _modal} ->
+                check_updates_async(app)
+
+              {:install, _modal} ->
+                install_update_async(app)
+
+              {:cancel, _modal} ->
+                {_popped, app} = pop_modal(app)
+                app
+
+              %UpdateModal{} = updated_modal ->
                 %{app | modals: [updated_modal | rest]}
             end
 
@@ -5513,6 +5695,18 @@ defmodule Strata.UI.App do
             %{app | modals: [%{top | focused_field: field} | rest]}
         end
 
+      match?(%UpdateModal{}, top) and rel_y >= 0 ->
+        fields = UpdateModal.rendered_fields(top)
+
+        case Enum.at(fields, rel_y) do
+          %{key: field} when field in [:check_button, :update_button, :close_button] ->
+            updated_top = %{top | focused_field: field}
+            handle_key(%{app | modals: [updated_top | rest]}, :enter)
+
+          _ ->
+            app
+        end
+
       match?(%ExportModal{}, top) and rel_y >= 0 ->
         fields = [:format, :file_path, :scope, :export_button, :cancel_button]
 
@@ -5806,7 +6000,8 @@ defmodule Strata.UI.App do
     modal =
       ActionsModal.new(grid, app.active_view,
         focus: app.focus,
-        inspector_open: app.inspector_open
+        inspector_open: app.inspector_open,
+        update_info: app.update_info
       )
 
     push_modal(app, modal)

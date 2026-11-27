@@ -21,7 +21,7 @@ defmodule Strata.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :ssh],
+      extra_applications: [:logger, :ssh, :inets, :ssl],
       mod: {Strata.Application, []}
     ]
   end

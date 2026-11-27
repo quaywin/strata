@@ -117,15 +117,26 @@ The compiled binary will be output to `burrito_out/`:
 
 ---
 
-## 🛠️ CLI Options
+## 🛠️ CLI Options & Updates
 
 ```bash
 # Show help message
-strata --help        # or: strata -h
+strata --help          # or: strata -h
 
 # Show current version
-strata --version     # or: strata -v
+strata --version       # or: strata -v
+
+# Check if a newer release is available
+strata update --check  # or: strata --check-update
+
+# Self-update standalone binary to the latest release
+strata update          # or: strata --update
+
+# Update to a specific release tag
+strata update --version v0.1.10
 ```
+
+Inside the TUI, press `?` (or `Ctrl+P`) and select **Check for Updates** to check GitHub Releases and install standalone binary updates in-app.
 
 ---
 

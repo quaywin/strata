@@ -1945,6 +1945,9 @@ defmodule Strata.UI.Renderer do
         match?(%Strata.UI.Components.AISettingsModal{}, top) ->
           {74, 18}
 
+        match?(%Strata.UI.Components.UpdateModal{}, top) ->
+          {76, 18}
+
         match?(%{type: :confirm_delete_connection}, top) ->
           {54, 9}
 
@@ -2032,6 +2035,9 @@ defmodule Strata.UI.Renderer do
 
             %Strata.UI.Components.AISettingsModal{} = ai_settings_modal ->
               Strata.UI.Components.AISettingsModal.render(ai_settings_modal, modal_area)
+
+            %Strata.UI.Components.UpdateModal{} = update_modal ->
+              Strata.UI.Components.UpdateModal.render(update_modal, modal_area)
 
             map when is_map(map) ->
               map
@@ -2146,7 +2152,7 @@ defmodule Strata.UI.Renderer do
                   String.contains?(msg, ["❌", "failed", "Error"]) ->
                     %Style{fg: :red, modifiers: [:bold]}
 
-                  String.contains?(msg, ["⏳", "Testing"]) ->
+                  String.contains?(msg, ["⏳", "Testing", "Checking", "Downloading", "Updating"]) ->
                     %Style{fg: :yellow, modifiers: [:bold]}
 
                   true ->

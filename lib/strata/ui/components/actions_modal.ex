@@ -21,11 +21,13 @@ defmodule Strata.UI.Components.ActionsModal do
   def new(%DataGrid{} = grid \\ DataGrid.new(), data_source \\ :table_view, opts \\ []) do
     focus = Keyword.get(opts, :focus, :datagrid)
     inspector_open? = Keyword.get(opts, :inspector_open, false)
+    update_info = Keyword.get(opts, :update_info)
+    update_item = update_action_item(update_info)
 
     items =
       case focus do
         :sidebar ->
-          sidebar_items() ++ navigation_items(data_source)
+          sidebar_items() ++ [update_item] ++ navigation_items(data_source)
 
         :editor ->
           editor_result_items =
@@ -33,18 +35,32 @@ defmodule Strata.UI.Components.ActionsModal do
               do: datagrid_items(grid, data_source, inspector_open?),
               else: []
 
-          editor_items() ++ navigation_items(data_source) ++ editor_result_items
+          editor_items() ++ [update_item] ++ navigation_items(data_source) ++ editor_result_items
 
         _ ->
           datagrid_items(grid, data_source, inspector_open?) ++
             [
               %{id: :ai_settings, label: "AI Assistant Settings", shortcut: "Actions"},
+              update_item,
               %{id: :sidebar_ssh, label: "SSH Tunnel Profiles", shortcut: "Sidebar S"}
             ] ++
             navigation_items(data_source)
       end
 
     %__MODULE__{items: items, selected_index: 0}
+  end
+
+  defp update_action_item(%{status: :update_available, latest_version: ver})
+       when is_binary(ver) do
+    %{id: :check_updates, label: "Check for Updates (🆕 v#{ver})", shortcut: "Actions"}
+  end
+
+  defp update_action_item(_info) do
+    %{
+      id: :check_updates,
+      label: "Check for Updates (v#{Strata.CLI.version()})",
+      shortcut: "Actions"
+    }
   end
 
   defp sidebar_items do
